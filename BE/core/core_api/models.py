@@ -1,0 +1,55 @@
+from context.models import Tenant
+from django.db import models
+from django.conf import settings
+
+User = settings.AUTH_USER_MODEL
+
+class TenantQuerySet(models.QuerySet):
+    def for_tenant(self, tenant):
+        return self.filter(tenant=tenant)
+
+
+class TenantManager(models.Manager):
+    def get_queryset(self):
+        return TenantQuerySet(self.model, using=self._db)
+
+    def for_tenant(self, tenant):
+        return self.get_queryset().for_tenant(tenant)
+
+class Task(models.Model):
+	
+    objects = TenantManager()
+
+    tenant = models.ForeignKey(
+        Tenant,
+        on_delete=models.CASCADE,
+        related_name="tasks",
+    )
+
+    title = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="tasks_created",
+    )
+
+    assigned_to = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="tasks_assigned",
+    )
+
+    status = models.CharField(max_length=32, default="OPEN")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+    	indexes = [
+        		models.Index(fields=["tenant", "-created_at"]),
+    ]
+
+    def __str__(self):
+        return self.title
