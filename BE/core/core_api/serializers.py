@@ -40,9 +40,9 @@ class TaskSerializer(serializers.ModelSerializer):
 
     def validate_assigned_to(self, user):
         request = self.context["request"]
+        current_tenant = request.user.tenant
 
-        # Prevent cross-tenant assignment
-        if hasattr(user, "tenant") and user.tenant != request.tenant:
+        if user.tenant != current_tenant:
             raise serializers.ValidationError(
                 "Cannot assign task outside your tenant."
             )
@@ -57,7 +57,7 @@ class TaskSerializer(serializers.ModelSerializer):
         request = self.context["request"]
 
         if self.instance:
-            if self.instance.tenant != request.tenant:
+            if self.instance.tenant != request.user.tenant:
                 raise serializers.ValidationError(
                     "Cross-tenant modification forbidden."
                 )
@@ -69,18 +69,12 @@ class TaskSerializer(serializers.ModelSerializer):
     # -------------------------
 
     def create(self, validated_data):
-        request = self.context["request"]
-
-        return Task.objects.create(
-            tenant=request.tenant,
-            created_by=request.user,
-            **validated_data
-        )
+        return super().create(validated_data)
 
     def update(self, instance, validated_data):
         request = self.context["request"]
 
-        if instance.tenant != request.tenant:
+        if instance.tenant != request.user.tenant:
             raise serializers.ValidationError(
                 "Cross-tenant modification forbidden."
             )
