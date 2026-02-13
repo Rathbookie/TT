@@ -60,8 +60,19 @@ class Task(models.Model):
         default=Status.OPEN,
     )
 
+    # -------------------
+    # AUDIT FIELDS
+    # -------------------
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    updated_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="tasks_updated",
+    )
 
     # -------------------
     # SOFT DELETE FIELDS

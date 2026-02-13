@@ -55,7 +55,7 @@ class TaskViewSet(ModelViewSet):
         if instance.is_deleted:
             raise PermissionDenied("Cannot modify deleted task.")
 
-        serializer.save()
+        serializer.save(updated_by=self.request.user)
 
     def perform_destroy(self, instance):
         if instance.tenant != self.request.user.tenant:
