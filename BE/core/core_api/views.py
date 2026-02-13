@@ -6,12 +6,12 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.viewsets import ModelViewSet
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.decorators import action
 
-from core_api.models import Task
 from core_api.serializers import TaskSerializer
 from core_api.permissions import TaskPermission
 from core_api.models import Task, TaskHistory
-from users.utils import is_admin
+from core_api.serializers import TaskHistorySerializer
 
 from django.db import transaction
 from django.db.models import F
@@ -37,12 +37,9 @@ class TaskViewSet(ModelViewSet):
 
         tenant = user.tenant
 
-        queryset = Task.objects.for_tenant(tenant).filter(is_deleted=False)
-
-        if is_admin(user):
-            return queryset
-
-        return queryset.filter(
+        return Task.objects.for_tenant(tenant).filter(
+            is_deleted=False
+        ).filter(
             Q(created_by=user) | Q(assigned_to=user)
         )
 
@@ -66,14 +63,12 @@ class TaskViewSet(ModelViewSet):
         with transaction.atomic():
             instance = self.get_object()
 
-            # ---- Tenant & Soft Delete Protection ----
             if instance.tenant != request.user.tenant:
                 raise PermissionDenied("Cross-tenant modification forbidden.")
 
             if instance.is_deleted:
                 raise PermissionDenied("Cannot modify deleted task.")
 
-            # ---- Optimistic Locking ----
             client_version = request.data.get("version")
 
             if client_version is None:
@@ -95,7 +90,6 @@ class TaskViewSet(ModelViewSet):
 
             task.refresh_from_db()
 
-            # ---- History ----
             TaskHistory.objects.create(
                 tenant=task.tenant,
                 task=task,
@@ -106,7 +100,7 @@ class TaskViewSet(ModelViewSet):
                 status=task.status,
             )
 
-        return Response(self.get_serializer(task).data)
+            return Response(self.get_serializer(task).data)
 
 
     def perform_destroy(self, instance):
@@ -122,11 +116,34 @@ class TaskViewSet(ModelViewSet):
         instance.save()
 
         TaskHistory.objects.create(
-        tenant=instance.tenant,
-        task=instance,
-        action=TaskHistory.Action.SOFT_DELETED,
-        performed_by=self.request.user,
-        title=instance.title,
-        description=instance.description,
-        status=instance.status,
-)
+            tenant=instance.tenant,
+            task=instance,
+            action=TaskHistory.Action.SOFT_DELETED,
+            performed_by=self.request.user,
+            title=instance.title,
+            description=instance.description,
+            status=instance.status,
+    
+    )
+
+    @action(detail=True, methods=["get"], url_path="history")
+    def history(self, request, pk=None):
+        task = self.get_object()
+
+        # Tenant safety
+        if task.tenant != request.user.tenant:
+            raise PermissionDenied("Cross-tenant access forbidden.")
+
+        queryset = TaskHistory.objects.filter(
+            task=task,
+            tenant=request.user.tenant
+        ).order_by("-timestamp")
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = TaskHistorySerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = TaskHistorySerializer(queryset, many=True)
+        return Response(serializer.data)
+    

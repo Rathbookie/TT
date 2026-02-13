@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Task
+from .models import Task,TaskHistory
 from users.models import User
 
 
@@ -81,3 +81,17 @@ class TaskSerializer(serializers.ModelSerializer):
             )
 
         return super().update(instance, validated_data)
+
+class TaskHistorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TaskHistory
+        fields = [
+            "id",
+            "action",
+            "performed_by",
+            "timestamp",
+            "title",
+            "description",
+            "status",
+        ]
+        read_only_fields = fields
