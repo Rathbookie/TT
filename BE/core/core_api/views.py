@@ -13,6 +13,11 @@ from core_api.permissions import TaskPermission
 from core_api.models import Task, TaskHistory
 from users.utils import is_admin
 
+from django.db import transaction
+from django.db.models import F
+from rest_framework import status
+from rest_framework.exceptions import ValidationError
+
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
@@ -57,26 +62,52 @@ class TaskViewSet(ModelViewSet):
             status=task.status,
         )
 
-    def perform_update(self, serializer):
-        instance = self.get_object()
+    def update(self, request, *args, **kwargs):
+        with transaction.atomic():
+            instance = self.get_object()
 
-        if instance.tenant != self.request.user.tenant:
-            raise PermissionDenied("Cross-tenant modification forbidden.")
+            # ---- Tenant & Soft Delete Protection ----
+            if instance.tenant != request.user.tenant:
+                raise PermissionDenied("Cross-tenant modification forbidden.")
 
-        if instance.is_deleted:
-            raise PermissionDenied("Cannot modify deleted task.")
+            if instance.is_deleted:
+                raise PermissionDenied("Cannot modify deleted task.")
 
-        task = serializer.save(updated_by=self.request.user)
+            # ---- Optimistic Locking ----
+            client_version = request.data.get("version")
 
-        TaskHistory.objects.create(
-            tenant=task.tenant,
-            task=task,
-            action=TaskHistory.Action.UPDATED,
-            performed_by=self.request.user,
-            title=task.title,
-            description=task.description,
-            status=task.status,
-        )
+            if client_version is None:
+                raise ValidationError({"version": "Version is required."})
+
+            if int(client_version) != instance.version:
+                return Response(
+                    {"detail": "Conflict detected. Task was modified by another user."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            serializer = self.get_serializer(instance, data=request.data)
+            serializer.is_valid(raise_exception=True)
+
+            task = serializer.save(
+                updated_by=request.user,
+                version=F("version") + 1,
+            )
+
+            task.refresh_from_db()
+
+            # ---- History ----
+            TaskHistory.objects.create(
+                tenant=task.tenant,
+                task=task,
+                action=TaskHistory.Action.UPDATED,
+                performed_by=request.user,
+                title=task.title,
+                description=task.description,
+                status=task.status,
+            )
+
+        return Response(self.get_serializer(task).data)
+
 
     def perform_destroy(self, instance):
         if instance.tenant != self.request.user.tenant:

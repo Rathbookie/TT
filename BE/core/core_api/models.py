@@ -61,6 +61,11 @@ class Task(models.Model):
     )
 
     # -------------------
+    # OPTIMISTIC LOCKING
+    # -------------------
+    version = models.PositiveIntegerField(default=1)
+    
+    # -------------------
     # AUDIT FIELDS
     # -------------------
     created_at = models.DateTimeField(auto_now_add=True)

@@ -13,6 +13,7 @@ class TaskSerializer(serializers.ModelSerializer):
             "description",
             "assigned_to",
             "status",
+            "version",
             "created_at",
             "updated_at",
         ]
