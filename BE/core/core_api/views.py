@@ -10,6 +10,7 @@ from rest_framework.exceptions import PermissionDenied
 from core_api.models import Task
 from core_api.serializers import TaskSerializer
 from core_api.permissions import TaskPermission
+from core_api.models import Task, TaskHistory
 from users.utils import is_admin
 
 
@@ -41,9 +42,19 @@ class TaskViewSet(ModelViewSet):
         )
 
     def perform_create(self, serializer):
-        serializer.save(
+        task = serializer.save(
             tenant=self.request.user.tenant,
             created_by=self.request.user,
+        )
+
+        TaskHistory.objects.create(
+            tenant=task.tenant,
+            task=task,
+            action=TaskHistory.Action.CREATED,
+            performed_by=self.request.user,
+            title=task.title,
+            description=task.description,
+            status=task.status,
         )
 
     def perform_update(self, serializer):
@@ -55,7 +66,17 @@ class TaskViewSet(ModelViewSet):
         if instance.is_deleted:
             raise PermissionDenied("Cannot modify deleted task.")
 
-        serializer.save(updated_by=self.request.user)
+        task = serializer.save(updated_by=self.request.user)
+
+        TaskHistory.objects.create(
+            tenant=task.tenant,
+            task=task,
+            action=TaskHistory.Action.UPDATED,
+            performed_by=self.request.user,
+            title=task.title,
+            description=task.description,
+            status=task.status,
+        )
 
     def perform_destroy(self, instance):
         if instance.tenant != self.request.user.tenant:
@@ -68,3 +89,13 @@ class TaskViewSet(ModelViewSet):
         instance.deleted_at = timezone.now()
         instance.deleted_by = self.request.user
         instance.save()
+
+        TaskHistory.objects.create(
+        tenant=instance.tenant,
+        task=instance,
+        action=TaskHistory.Action.SOFT_DELETED,
+        performed_by=self.request.user,
+        title=instance.title,
+        description=instance.description,
+        status=instance.status,
+)

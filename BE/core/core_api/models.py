@@ -96,3 +96,59 @@ class Task(models.Model):
 
     def __str__(self):
         return self.title
+
+class TaskHistory(models.Model):
+
+    class Action(models.TextChoices):
+        CREATED = "CREATED", "Created"
+        UPDATED = "UPDATED", "Updated"
+        SOFT_DELETED = "SOFT_DELETED", "Soft Deleted"
+
+    tenant = models.ForeignKey(
+        Tenant,
+        on_delete=models.CASCADE,
+        related_name="task_history",
+    )
+
+    task = models.ForeignKey(
+        Task,
+        on_delete=models.CASCADE,
+        related_name="history",
+    )
+
+    action = models.CharField(
+        max_length=32,
+        choices=Action.choices,
+    )
+
+    performed_by = models.ForeignKey(
+        User,
+        null=True,
+        on_delete=models.SET_NULL,
+        related_name="task_history_actions",
+    )
+
+    timestamp = models.DateTimeField(auto_now_add=True)
+
+    # Snapshot fields (immutable record)
+    title = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+    status = models.CharField(max_length=32)
+
+    class Meta:
+        ordering = ["-timestamp"]
+        indexes = [
+            models.Index(fields=["tenant", "task"]),
+            models.Index(fields=["timestamp"]),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise ValueError("TaskHistory records are immutable.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError("TaskHistory records cannot be deleted.")
+
+    def __str__(self):
+        return f"{self.task.id} - {self.action} - {self.timestamp}"

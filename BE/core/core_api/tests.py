@@ -4,6 +4,7 @@ from rest_framework import status
 from users.models import User, Role, UserRole
 from context.models import Tenant
 from core_api.models import Task
+from core_api.models import TaskHistory
 
 
 class TaskPermissionTests(APITestCase):
@@ -190,3 +191,57 @@ class TaskPermissionTests(APITestCase):
 
         response = self.client.get(self.url)
         self.assertEqual(len(response.data["results"]), 0)
+
+    def test_task_history_created_on_create(self):
+        self.client.force_authenticate(user=self.creator)
+
+        response = self.client.post(self.url, {
+            "title": "History Test",
+            "description": "",
+            "assigned_to": self.receiver.id,
+        })
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(TaskHistory.objects.count(), 1)
+        history = TaskHistory.objects.first()
+        self.assertEqual(history.action, TaskHistory.Action.CREATED)
+
+
+    def test_task_history_created_on_update(self):
+        task = Task.objects.create(
+            tenant=self.tenant_a,
+            title="Initial",
+            description="",
+            created_by=self.creator,
+            assigned_to=self.receiver,
+        )
+
+        self.client.force_authenticate(user=self.creator)
+
+        self.client.patch(
+            f"{self.url}{task.id}/",
+            {"title": "Updated"},
+        )
+
+        self.assertEqual(TaskHistory.objects.count(), 1)
+        history = TaskHistory.objects.first()
+        self.assertEqual(history.action, TaskHistory.Action.UPDATED)
+
+
+    def test_task_history_created_on_soft_delete(self):
+        task = Task.objects.create(
+            tenant=self.tenant_a,
+            title="Delete Me",
+            description="",
+            created_by=self.creator,
+            assigned_to=self.receiver,
+        )
+
+        self.client.force_authenticate(user=self.creator)
+
+        self.client.delete(f"{self.url}{task.id}/")
+
+        self.assertEqual(TaskHistory.objects.count(), 1)
+        history = TaskHistory.objects.first()
+        self.assertEqual(history.action, TaskHistory.Action.SOFT_DELETED)
+
