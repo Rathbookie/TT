@@ -9,6 +9,9 @@ class TenantQuerySet(models.QuerySet):
     def for_tenant(self, tenant):
         return self.filter(tenant=tenant)
 
+    def active(self):
+        return self.filter(is_deleted=False)
+
 
 class TenantManager(models.Manager):
     def get_queryset(self):
@@ -16,6 +19,9 @@ class TenantManager(models.Manager):
 
     def for_tenant(self, tenant):
         return self.get_queryset().for_tenant(tenant)
+
+    def active(self):
+        return self.get_queryset().active()
 
 
 class Task(models.Model):
@@ -57,10 +63,24 @@ class Task(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    # -------------------
+    # SOFT DELETE FIELDS
+    # -------------------
+    is_deleted = models.BooleanField(default=False)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="tasks_deleted",
+    )
+
     class Meta:
         ordering = ["-created_at"]
         indexes = [
             models.Index(fields=["tenant", "-created_at"]),
+            models.Index(fields=["tenant", "is_deleted"]),
         ]
 
     def __str__(self):

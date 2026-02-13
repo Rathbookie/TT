@@ -170,3 +170,23 @@ class TaskPermissionTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.data["results"]), 1)
+
+    def test_soft_delete(self):
+        task = Task.objects.create(
+            tenant=self.tenant_a,
+            title="Soft Delete Test",
+            description="",
+            created_by=self.creator,
+            assigned_to=self.receiver,
+        )
+
+        self.client.force_authenticate(user=self.creator)
+
+        response = self.client.delete(f"{self.url}{task.id}/")
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+
+        task.refresh_from_db()
+        self.assertTrue(task.is_deleted)
+
+        response = self.client.get(self.url)
+        self.assertEqual(len(response.data["results"]), 0)

@@ -1,4 +1,5 @@
 from django.db.models import Q
+from django.utils import timezone
 
 from rest_framework.response import Response
 from rest_framework.decorators import api_view, permission_classes
@@ -12,19 +13,11 @@ from core_api.permissions import TaskPermission
 from users.utils import is_admin
 
 
-# --------------------
-# Health Check
-# --------------------
-
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def health(request):
     return Response({"status": "ok"})
 
-
-# --------------------
-# Tasks API
-# --------------------
 
 class TaskViewSet(ModelViewSet):
     serializer_class = TaskSerializer
@@ -38,7 +31,7 @@ class TaskViewSet(ModelViewSet):
 
         tenant = user.tenant
 
-        queryset = Task.objects.for_tenant(tenant)
+        queryset = Task.objects.for_tenant(tenant).filter(is_deleted=False)
 
         if is_admin(user):
             return queryset
@@ -59,10 +52,19 @@ class TaskViewSet(ModelViewSet):
         if instance.tenant != self.request.user.tenant:
             raise PermissionDenied("Cross-tenant modification forbidden.")
 
+        if instance.is_deleted:
+            raise PermissionDenied("Cannot modify deleted task.")
+
         serializer.save()
 
     def perform_destroy(self, instance):
         if instance.tenant != self.request.user.tenant:
             raise PermissionDenied("Cross-tenant deletion forbidden.")
 
-        instance.delete()
+        if instance.is_deleted:
+            return  # already deleted
+
+        instance.is_deleted = True
+        instance.deleted_at = timezone.now()
+        instance.deleted_by = self.request.user
+        instance.save()
