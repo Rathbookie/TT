@@ -47,8 +47,9 @@ class Task(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-    	indexes = [
-        		models.Index(fields=["tenant", "-created_at"]),
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["tenant", "-created_at"]),
     ]
 
     def __str__(self):

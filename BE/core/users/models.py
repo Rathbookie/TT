@@ -41,6 +41,13 @@ class UserRole(models.Model):
         on_delete=models.CASCADE,
         related_name="user_roles",
     )
+
+    tenant = models.ForeignKey(
+        Tenant,
+        on_delete=models.CASCADE,
+        related_name="tenant_user_roles",
+    )
+
     role = models.ForeignKey(
         Role,
         on_delete=models.CASCADE,
@@ -48,9 +55,7 @@ class UserRole(models.Model):
     )
 
     class Meta:
-        unique_together = ("user", "role")
+        unique_together = ("user", "tenant", "role")
 
     def __str__(self):
-        return f"{self.user} → {self.role.name}"
-    
-
+        return f"{self.user} → {self.role.name} ({self.tenant})"
