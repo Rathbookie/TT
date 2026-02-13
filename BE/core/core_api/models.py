@@ -4,6 +4,7 @@ from django.conf import settings
 
 User = settings.AUTH_USER_MODEL
 
+
 class TenantQuerySet(models.QuerySet):
     def for_tenant(self, tenant):
         return self.filter(tenant=tenant)
@@ -16,8 +17,14 @@ class TenantManager(models.Manager):
     def for_tenant(self, tenant):
         return self.get_queryset().for_tenant(tenant)
 
+
 class Task(models.Model):
-	
+
+    class Status(models.TextChoices):
+        OPEN = "OPEN", "Open"
+        IN_PROGRESS = "IN_PROGRESS", "In Progress"
+        DONE = "DONE", "Done"
+
     objects = TenantManager()
 
     tenant = models.ForeignKey(
@@ -41,7 +48,11 @@ class Task(models.Model):
         related_name="tasks_assigned",
     )
 
-    status = models.CharField(max_length=32, default="OPEN")
+    status = models.CharField(
+        max_length=32,
+        choices=Status.choices,
+        default=Status.OPEN,
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -50,7 +61,7 @@ class Task(models.Model):
         ordering = ["-created_at"]
         indexes = [
             models.Index(fields=["tenant", "-created_at"]),
-    ]
+        ]
 
     def __str__(self):
         return self.title
