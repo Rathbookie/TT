@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from .models import Task,TaskHistory
 from users.models import User
+from .models import TaskAttachment
 
 
 class TaskSerializer(serializers.ModelSerializer):
@@ -95,3 +96,30 @@ class TaskHistorySerializer(serializers.ModelSerializer):
             "status",
         ]
         read_only_fields = fields
+
+
+
+class TaskAttachmentSerializer(serializers.ModelSerializer):
+    file = serializers.SerializerMethodField()
+    uploaded_by = serializers.StringRelatedField(read_only=True)
+
+    class Meta:
+        model = TaskAttachment
+        fields = [
+            "id",
+            "file",
+            "original_name",
+            "uploaded_by",
+            "uploaded_at",
+        ]
+        read_only_fields = [
+            "id",
+            "uploaded_by",
+            "uploaded_at",
+        ]
+
+    def get_file(self, obj):
+        request = self.context.get("request")
+        if request:
+            return request.build_absolute_uri(obj.file.url)
+        return obj.file.url

@@ -157,3 +157,42 @@ class TaskHistory(models.Model):
 
     def __str__(self):
         return f"{self.task.id} - {self.action} - {self.timestamp}"
+
+    # -------------------
+    # MANAGE ATTACHEMENTS
+    # -------------------
+
+class TaskAttachment(models.Model):
+    tenant = models.ForeignKey(
+        Tenant,
+        on_delete=models.CASCADE,
+        related_name="task_attachments",
+    )
+
+    task = models.ForeignKey(
+        Task,
+        on_delete=models.CASCADE,
+        related_name="attachments",
+    )
+
+    uploaded_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="uploaded_attachments",
+    )
+
+    file = models.FileField(upload_to="task_attachments/")
+
+    original_name = models.CharField(max_length=255)
+
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-uploaded_at"]
+        indexes = [
+            models.Index(fields=["tenant", "task"]),
+        ]
+
+    def __str__(self):
+        return self.original_name

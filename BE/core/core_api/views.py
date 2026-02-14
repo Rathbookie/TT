@@ -18,6 +18,10 @@ from django.db.models import F
 from rest_framework import status
 from rest_framework.exceptions import ValidationError
 
+from rest_framework.parsers import MultiPartParser, FormParser
+from .models import TaskAttachment
+from .serializers import TaskAttachmentSerializer
+
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
@@ -150,3 +154,34 @@ class TaskViewSet(ModelViewSet):
         serializer = TaskHistorySerializer(queryset, many=True)
         return Response(serializer.data)
     
+    @action(
+    detail=True,
+    methods=["post"],
+    url_path="attachments",
+    parser_classes=[MultiPartParser, FormParser],
+    )
+    def upload_attachment(self, request, pk=None):
+        task = self.get_object()
+
+        if task.tenant != request.user.tenant:
+            raise PermissionDenied("Cross-tenant upload forbidden.")
+
+        if "file" not in request.FILES:
+            return Response(
+                {"detail": "No file provided."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        uploaded_file = request.FILES["file"]
+
+        attachment = TaskAttachment.objects.create(
+            tenant=request.user.tenant,
+            task=task,
+            uploaded_by=request.user,
+            file=uploaded_file,
+            original_name=uploaded_file.name,
+        )
+
+        serializer = TaskAttachmentSerializer(attachment,context={"request": request})
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+        
