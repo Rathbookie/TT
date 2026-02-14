@@ -44,6 +44,8 @@ INSTALLED_APPS = [
 
     "rest_framework",
 
+    "corsheaders",
+
     "users",
     "authx",
     "core_api",
@@ -108,6 +110,9 @@ MIDDLEWARE = [
     "core.middleware.TenantMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+
+    "corsheaders.middleware.CorsMiddleware",
+    "django.middleware.common.CommonMiddleware",
 ]
 
 
@@ -196,3 +201,8 @@ STATIC_URL = "static/"
 # --------------------------------------------------
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+]

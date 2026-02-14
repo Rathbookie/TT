@@ -80,7 +80,10 @@ class TaskViewSet(ModelViewSet):
                     status=status.HTTP_409_CONFLICT,
                 )
 
-            serializer = self.get_serializer(instance, data=request.data)
+            serializer = self.get_serializer(instance, 
+                                             data=request.data,
+                                             partial=True
+            )
             serializer.is_valid(raise_exception=True)
 
             task = serializer.save(
