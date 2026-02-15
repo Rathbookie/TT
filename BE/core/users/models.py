@@ -5,6 +5,9 @@ from context.models import Tenant
 
 
 class User(AbstractUser):
+    first_name = models.CharField(max_length=150, default ="Temp")
+    last_name = models.CharField(max_length=150, default ="User")
+
     tenant = models.ForeignKey(
         Tenant,
         on_delete=models.CASCADE,

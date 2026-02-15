@@ -22,6 +22,8 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from .models import TaskAttachment
 from .serializers import TaskAttachmentSerializer
 
+from users.models import UserRole
+
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
@@ -41,11 +43,32 @@ class TaskViewSet(ModelViewSet):
 
         tenant = user.tenant
 
-        return Task.objects.for_tenant(tenant).filter(
+        qs = Task.objects.for_tenant(tenant).filter(
             is_deleted=False
-        ).filter(
-            Q(created_by=user) | Q(assigned_to=user)
         )
+
+        active_role = self.request.headers.get("X-Active-Role")
+
+        # Fetch roles assigned to this user in this tenant
+        user_roles = list(
+            UserRole.objects.filter(user=user, tenant=tenant)
+            .values_list("role__name", flat=True)
+        )
+
+        # If client sends invalid role → deny access
+        if active_role not in user_roles:
+            return qs.none()
+
+        if active_role == "TASK_RECEIVER":
+            qs = qs.filter(assigned_to=user)
+
+        elif active_role == "TASK_CREATOR":
+            qs = qs.filter(created_by=user)
+
+        elif active_role == "ADMIN":
+            pass  # Full tenant access
+
+        return qs
 
     def perform_create(self, serializer):
         task = serializer.save(

@@ -4,7 +4,61 @@ from users.models import User
 from .models import TaskAttachment
 
 
+class TaskAttachmentSerializer(serializers.ModelSerializer):
+    file = serializers.SerializerMethodField()
+    uploaded_by = serializers.StringRelatedField(read_only=True)
+
+    class Meta:
+        model = TaskAttachment
+        fields = [
+            "id",
+            "file",
+            "original_name",
+            "uploaded_by",
+            "uploaded_at",
+        ]
+        read_only_fields = [
+            "id",
+            "uploaded_by",
+            "uploaded_at",
+        ]
+
+    def get_file(self, obj):
+        request = self.context.get("request")
+        if request:
+            return request.build_absolute_uri(obj.file.url)
+        return obj.file.url
+
+
+
+class TaskUserSerializer(serializers.ModelSerializer):
+    full_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = ["id", "full_name", "email"]
+
+    def get_full_name(self, obj):
+        return f"{obj.first_name} {obj.last_name}".strip()
+
+
 class TaskSerializer(serializers.ModelSerializer):
+
+    assigned_to = TaskUserSerializer(read_only=True)
+    created_by = TaskUserSerializer(read_only=True)
+
+    attachments = TaskAttachmentSerializer(
+        many=True,
+        read_only=True
+    )
+
+    # Needed so POST still accepts assigned_to as ID
+    assigned_to_id = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.all(),
+        source="assigned_to",
+        write_only=True,
+        required=True
+    )
 
     class Meta:
         model = Task
@@ -13,16 +67,21 @@ class TaskSerializer(serializers.ModelSerializer):
             "title",
             "description",
             "assigned_to",
+            "assigned_to_id",
+            "created_by",
             "status",
             "version",
             "created_at",
             "updated_at",
+            "attachments",
         ]
         read_only_fields = [
             "id",
             "created_at",
             "updated_at",
+            "created_by",
         ]
+
 
     # -------------------------
     # FIELD VALIDATION
@@ -97,29 +156,3 @@ class TaskHistorySerializer(serializers.ModelSerializer):
         ]
         read_only_fields = fields
 
-
-
-class TaskAttachmentSerializer(serializers.ModelSerializer):
-    file = serializers.SerializerMethodField()
-    uploaded_by = serializers.StringRelatedField(read_only=True)
-
-    class Meta:
-        model = TaskAttachment
-        fields = [
-            "id",
-            "file",
-            "original_name",
-            "uploaded_by",
-            "uploaded_at",
-        ]
-        read_only_fields = [
-            "id",
-            "uploaded_by",
-            "uploaded_at",
-        ]
-
-    def get_file(self, obj):
-        request = self.context.get("request")
-        if request:
-            return request.build_absolute_uri(obj.file.url)
-        return obj.file.url
