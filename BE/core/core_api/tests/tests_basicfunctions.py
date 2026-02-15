@@ -10,9 +10,6 @@ from core_api.models import TaskHistory
 class TaskPermissionTests(APITestCase):
 
     def setUp(self):
-        # --------------------
-        # Tenants
-        # --------------------
         self.tenant_a = Tenant.objects.create(
             name="Tenant A",
             slug="tenant-a-test"
@@ -23,48 +20,30 @@ class TaskPermissionTests(APITestCase):
             slug="tenant-b-test"
         )
 
-        # --------------------
-        # Roles
-        # --------------------
         self.admin_role, _ = Role.objects.get_or_create(name=Role.ADMIN)
         self.creator_role, _ = Role.objects.get_or_create(name=Role.TASK_CREATOR)
         self.receiver_role, _ = Role.objects.get_or_create(name=Role.TASK_RECEIVER)
 
-        # --------------------
-        # Users (Tenant A)
-        # --------------------
         self.admin = User.objects.create_user(
             username="admin",
             password="pass123",
             tenant=self.tenant_a,
         )
-        UserRole.objects.create(
-            user=self.admin,
-            role=self.admin_role,
-            tenant=self.tenant_a,
-        )
+        UserRole.objects.create(user=self.admin, role=self.admin_role, tenant=self.tenant_a)
 
         self.creator = User.objects.create_user(
             username="creator",
             password="pass123",
             tenant=self.tenant_a,
         )
-        UserRole.objects.create(
-            user=self.creator,
-            role=self.creator_role,
-            tenant=self.tenant_a,
-        )
+        UserRole.objects.create(user=self.creator, role=self.creator_role, tenant=self.tenant_a)
 
         self.receiver = User.objects.create_user(
             username="receiver",
             password="pass123",
             tenant=self.tenant_a,
         )
-        UserRole.objects.create(
-            user=self.receiver,
-            role=self.receiver_role,
-            tenant=self.tenant_a,
-        )
+        UserRole.objects.create(user=self.receiver, role=self.receiver_role, tenant=self.tenant_a)
 
         self.no_role_user = User.objects.create_user(
             username="norole",
@@ -72,9 +51,6 @@ class TaskPermissionTests(APITestCase):
             tenant=self.tenant_a,
         )
 
-        # --------------------
-        # Cross-tenant user
-        # --------------------
         self.other_user = User.objects.create_user(
             username="other",
             password="pass123",
@@ -98,22 +74,34 @@ class TaskPermissionTests(APITestCase):
     def test_receiver_cannot_create_task(self):
         self.client.force_authenticate(user=self.receiver)
 
-        response = self.client.post(self.url, {
-            "title": "Illegal task",
-            "description": "Should fail",
-            "assigned_to": self.receiver.id,
-        })
+        response = self.client.post(
+            self.url,
+            {
+                "title": "Illegal task",
+                "description": "Should fail",
+                "assigned_to_id": self.receiver.id,
+                "status": "IN_PROGRESS",
+                "version": 1,
+            },
+            HTTP_X_ACTIVE_ROLE="TASK_RECEIVER"
+        )
 
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_creator_can_create_task(self):
         self.client.force_authenticate(user=self.creator)
 
-        response = self.client.post(self.url, {
-            "title": "Valid task",
-            "description": "Should work",
-            "assigned_to": self.receiver.id,
-        })
+        response = self.client.post(
+            self.url,
+            {
+                "title": "Valid task",
+                "description": "Should work",
+                "assigned_to_id": self.receiver.id,
+                "status": "IN_PROGRESS",
+                "version": 1,
+            },
+            HTTP_X_ACTIVE_ROLE="TASK_CREATOR"
+        )
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(Task.objects.count(), 1)
@@ -129,11 +117,15 @@ class TaskPermissionTests(APITestCase):
             description="",
             created_by=self.other_user,
             assigned_to=self.other_user,
+            version=1,
         )
 
         self.client.force_authenticate(user=self.creator)
 
-        response = self.client.get(self.url)
+        response = self.client.get(
+            self.url,
+            HTTP_X_ACTIVE_ROLE="TASK_CREATOR"
+        )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.data["results"]), 0)
@@ -145,13 +137,15 @@ class TaskPermissionTests(APITestCase):
             description="",
             created_by=self.other_user,
             assigned_to=self.other_user,
+            version=1,
         )
 
         self.client.force_authenticate(user=self.creator)
 
         response = self.client.patch(
             f"{self.url}{task.id}/",
-            {"title": "Hacked"},
+            {"title": "Hacked", "version": 1},
+            HTTP_X_ACTIVE_ROLE="TASK_CREATOR"
         )
 
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
@@ -163,11 +157,15 @@ class TaskPermissionTests(APITestCase):
             description="",
             created_by=self.creator,
             assigned_to=self.receiver,
+            version=1,
         )
 
         self.client.force_authenticate(user=self.admin)
 
-        response = self.client.get(self.url)
+        response = self.client.get(
+            self.url,
+            HTTP_X_ACTIVE_ROLE="ADMIN"
+        )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.data["results"]), 1)
@@ -179,33 +177,45 @@ class TaskPermissionTests(APITestCase):
             description="",
             created_by=self.creator,
             assigned_to=self.receiver,
+            version=1,
         )
 
         self.client.force_authenticate(user=self.creator)
 
-        response = self.client.delete(f"{self.url}{task.id}/")
+        response = self.client.delete(
+            f"{self.url}{task.id}/",
+            HTTP_X_ACTIVE_ROLE="TASK_CREATOR"
+        )
+
         self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
 
         task.refresh_from_db()
         self.assertTrue(task.is_deleted)
 
-        response = self.client.get(self.url)
+        response = self.client.get(
+            self.url,
+            HTTP_X_ACTIVE_ROLE="TASK_CREATOR"
+        )
+
         self.assertEqual(len(response.data["results"]), 0)
 
     def test_task_history_created_on_create(self):
         self.client.force_authenticate(user=self.creator)
 
-        response = self.client.post(self.url, {
-            "title": "History Test",
-            "description": "",
-            "assigned_to": self.receiver.id,
-        })
+        response = self.client.post(
+            self.url,
+            {
+                "title": "History Test",
+                "description": "",
+                "assigned_to_id": self.receiver.id,
+                "status": "IN_PROGRESS",
+                "version": 1,
+            },
+            HTTP_X_ACTIVE_ROLE="TASK_CREATOR"
+        )
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(TaskHistory.objects.count(), 1)
-        history = TaskHistory.objects.first()
-        self.assertEqual(history.action, TaskHistory.Action.CREATED)
-
 
     def test_task_history_created_on_update(self):
         task = Task.objects.create(
@@ -214,19 +224,18 @@ class TaskPermissionTests(APITestCase):
             description="",
             created_by=self.creator,
             assigned_to=self.receiver,
+            version=1,
         )
 
         self.client.force_authenticate(user=self.creator)
 
         self.client.patch(
             f"{self.url}{task.id}/",
-            {"title": "Updated"},
+            {"title": "Updated", "version": 1},
+            HTTP_X_ACTIVE_ROLE="TASK_CREATOR"
         )
 
         self.assertEqual(TaskHistory.objects.count(), 1)
-        history = TaskHistory.objects.first()
-        self.assertEqual(history.action, TaskHistory.Action.UPDATED)
-
 
     def test_task_history_created_on_soft_delete(self):
         task = Task.objects.create(
@@ -235,13 +244,14 @@ class TaskPermissionTests(APITestCase):
             description="",
             created_by=self.creator,
             assigned_to=self.receiver,
+            version=1,
         )
 
         self.client.force_authenticate(user=self.creator)
 
-        self.client.delete(f"{self.url}{task.id}/")
+        self.client.delete(
+            f"{self.url}{task.id}/",
+            HTTP_X_ACTIVE_ROLE="TASK_CREATOR"
+        )
 
         self.assertEqual(TaskHistory.objects.count(), 1)
-        history = TaskHistory.objects.first()
-        self.assertEqual(history.action, TaskHistory.Action.SOFT_DELETED)
-

@@ -89,22 +89,42 @@ class TaskViewSet(ModelViewSet):
             pass  # Full tenant access
 
         return qs
+    
 
     def perform_create(self, serializer):
+        user = self.request.user
+        tenant = user.tenant
+
+        active_role = self.request.headers.get("X-Active-Role")
+
+        user_roles = list(
+            UserRole.objects.filter(user=user, tenant=tenant)
+            .values_list("role__name", flat=True)
+        )
+
+        # Validate active role exists and belongs to user
+        if active_role not in user_roles:
+            raise PermissionDenied("Invalid active role.")
+
+        # Only TASK_CREATOR or ADMIN can create tasks
+        if active_role not in ["TASK_CREATOR", "ADMIN"]:
+            raise PermissionDenied("You do not have permission to create tasks.")
+
         task = serializer.save(
-            tenant=self.request.user.tenant,
-            created_by=self.request.user,
+            tenant=tenant,
+            created_by=user,
         )
 
         TaskHistory.objects.create(
             tenant=task.tenant,
             task=task,
             action=TaskHistory.Action.CREATED,
-            performed_by=self.request.user,
+            performed_by=user,
             title=task.title,
             description=task.description,
             status=task.status,
-        )
+    )
+
 
     def update(self, request, *args, **kwargs):
         with transaction.atomic():
@@ -112,6 +132,23 @@ class TaskViewSet(ModelViewSet):
 
             if instance.tenant != request.user.tenant:
                 raise PermissionDenied("Cross-tenant modification forbidden.")
+            
+            active_role = request.headers.get("X-Active-Role")
+
+            user_roles = list(
+                UserRole.objects.filter(user=request.user, tenant=request.user.tenant)
+                .values_list("role__name", flat=True)
+            )
+
+            if active_role not in user_roles:
+                raise PermissionDenied("Invalid active role.")
+
+            # Permission logic
+            if active_role == "TASK_RECEIVER":
+                raise PermissionDenied("Task receivers cannot modify tasks.")
+
+            if active_role == "TASK_CREATOR" and instance.created_by != request.user:
+                raise PermissionDenied("You can only modify tasks you created.")
 
             if instance.is_deleted:
                 raise PermissionDenied("Cannot modify deleted task.")
@@ -154,6 +191,22 @@ class TaskViewSet(ModelViewSet):
 
 
     def perform_destroy(self, instance):
+
+        active_role = self.request.headers.get("X-Active-Role")
+        user_roles = list(
+            UserRole.objects.filter(user=self.request.user, tenant=self.request.user.tenant)
+            .values_list("role__name", flat=True)
+        )
+
+        if active_role not in user_roles:
+            raise PermissionDenied("Invalid active role.")
+
+        if active_role == "TASK_RECEIVER":
+            raise PermissionDenied("Task receivers cannot delete tasks.")
+
+        if active_role == "TASK_CREATOR" and instance.created_by != self.request.user:
+            raise PermissionDenied("You can only delete tasks you created.")
+        
         if instance.tenant != self.request.user.tenant:
             raise PermissionDenied("Cross-tenant deletion forbidden.")
 
