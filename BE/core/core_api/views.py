@@ -31,6 +31,26 @@ def health(request):
     return Response({"status": "ok"})
 
 
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def me(request):
+    user = request.user
+    tenant = user.tenant
+
+    roles = list(
+        UserRole.objects.filter(user=user, tenant=tenant)
+        .values_list("role__name", flat=True)
+    )
+
+    return Response({
+        "id": user.id,
+        "email": user.email,
+        "first_name": user.first_name,
+        "last_name": user.last_name,
+        "roles": roles,
+    })
+
+
 class TaskViewSet(ModelViewSet):
     serializer_class = TaskSerializer
     permission_classes = [IsAuthenticated, TaskPermission]
