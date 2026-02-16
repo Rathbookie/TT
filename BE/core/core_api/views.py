@@ -123,6 +123,8 @@ class TaskViewSet(ModelViewSet):
             title=task.title,
             description=task.description,
             status=task.status,
+            priority=task.priority,
+            due_date=task.due_date,
     )
 
 
@@ -152,6 +154,9 @@ class TaskViewSet(ModelViewSet):
 
             if instance.is_deleted:
                 raise PermissionDenied("Cannot modify deleted task.")
+
+            if instance.status == Task.Status.DONE:
+                raise PermissionDenied("Completed tasks cannot be modified.")
 
             client_version = request.data.get("version")
 
@@ -185,6 +190,8 @@ class TaskViewSet(ModelViewSet):
                 title=task.title,
                 description=task.description,
                 status=task.status,
+                priority=task.priority,
+                due_date=task.due_date,
             )
 
             return Response(self.get_serializer(task).data)
@@ -226,7 +233,8 @@ class TaskViewSet(ModelViewSet):
             title=instance.title,
             description=instance.description,
             status=instance.status,
-    
+            priority=instance.priority,
+            due_date=instance.due_date,
     )
 
     @action(detail=True, methods=["get"], url_path="history")
@@ -280,4 +288,27 @@ class TaskViewSet(ModelViewSet):
 
         serializer = TaskAttachmentSerializer(attachment,context={"request": request})
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+    
+    @action(
+    detail=True,
+    methods=["delete"],
+    url_path="attachments/(?P<attachment_id>[^/.]+)"
+    )
+    def delete_attachment(self, request, pk=None, attachment_id=None):
+        task = self.get_object()
+
+        if task.tenant != request.user.tenant:
+            raise PermissionDenied("Cross-tenant deletion forbidden.")
+
+        try:
+            attachment = TaskAttachment.objects.get(
+                id=attachment_id,
+                task=task,
+                tenant=request.user.tenant,
+            )
+        except TaskAttachment.DoesNotExist:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        attachment.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
         

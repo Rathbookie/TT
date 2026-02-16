@@ -1,8 +1,11 @@
 from rest_framework import serializers
-from .models import Task,TaskHistory
+from .models import Task, TaskHistory, TaskAttachment
 from users.models import User
-from .models import TaskAttachment
 
+
+# ==============================
+# ATTACHMENT SERIALIZER
+# ==============================
 
 class TaskAttachmentSerializer(serializers.ModelSerializer):
     file = serializers.SerializerMethodField()
@@ -30,6 +33,9 @@ class TaskAttachmentSerializer(serializers.ModelSerializer):
         return obj.file.url
 
 
+# ==============================
+# USER PROJECTION SERIALIZER
+# ==============================
 
 class TaskUserSerializer(serializers.ModelSerializer):
     full_name = serializers.SerializerMethodField()
@@ -42,6 +48,10 @@ class TaskUserSerializer(serializers.ModelSerializer):
         return f"{obj.first_name} {obj.last_name}".strip()
 
 
+# ==============================
+# TASK SERIALIZER
+# ==============================
+
 class TaskSerializer(serializers.ModelSerializer):
 
     assigned_to = TaskUserSerializer(read_only=True)
@@ -52,7 +62,6 @@ class TaskSerializer(serializers.ModelSerializer):
         read_only=True
     )
 
-    # Needed so POST still accepts assigned_to as ID
     assigned_to_id = serializers.PrimaryKeyRelatedField(
         queryset=User.objects.all(),
         source="assigned_to",
@@ -70,6 +79,9 @@ class TaskSerializer(serializers.ModelSerializer):
             "assigned_to_id",
             "created_by",
             "status",
+            "priority",
+            "blocked_reason",
+            "due_date",
             "version",
             "created_at",
             "updated_at",
@@ -81,7 +93,6 @@ class TaskSerializer(serializers.ModelSerializer):
             "updated_at",
             "created_by",
         ]
-
 
     # -------------------------
     # FIELD VALIDATION
@@ -123,14 +134,20 @@ class TaskSerializer(serializers.ModelSerializer):
                     "Cross-tenant modification forbidden."
                 )
 
+        # Determine final status
+        status = attrs.get("status", getattr(self.instance, "status", None))
+        blocked_reason = attrs.get("blocked_reason")
+
+        if status == Task.Status.BLOCKED and not blocked_reason:
+            raise serializers.ValidationError(
+                {"blocked_reason": "Blocked tasks require a reason."}
+            )
+
         return attrs
 
     # -------------------------
-    # CREATE / UPDATE
+    # UPDATE OVERRIDE
     # -------------------------
-
-    def create(self, validated_data):
-        return super().create(validated_data)
 
     def update(self, instance, validated_data):
         request = self.context["request"]
@@ -140,7 +157,19 @@ class TaskSerializer(serializers.ModelSerializer):
                 "Cross-tenant modification forbidden."
             )
 
+        # Clear blocked_reason if leaving BLOCKED
+        if (
+            validated_data.get("status")
+            and validated_data.get("status") != Task.Status.BLOCKED
+        ):
+            validated_data["blocked_reason"] = None
+
         return super().update(instance, validated_data)
+
+
+# ==============================
+# TASK HISTORY SERIALIZER
+# ==============================
 
 class TaskHistorySerializer(serializers.ModelSerializer):
     class Meta:
@@ -153,6 +182,22 @@ class TaskHistorySerializer(serializers.ModelSerializer):
             "title",
             "description",
             "status",
+            "priority",
+            "due_date",
         ]
         read_only_fields = fields
 
+
+# ==============================
+# TENANT USER LIST SERIALIZER
+# ==============================
+
+class TenantUserSerializer(serializers.ModelSerializer):
+    full_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = ["id", "full_name", "email"]
+
+    def get_full_name(self, obj):
+        return f"{obj.first_name} {obj.last_name}".strip()

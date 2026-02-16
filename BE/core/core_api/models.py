@@ -27,9 +27,18 @@ class TenantManager(models.Manager):
 class Task(models.Model):
 
     class Status(models.TextChoices):
-        OPEN = "OPEN", "Open"
+        NOT_STARTED = "NOT_STARTED", "Not Started"
         IN_PROGRESS = "IN_PROGRESS", "In Progress"
+        BLOCKED = "BLOCKED", "Blocked"
+        WAITING = "WAITING", "Waiting"
         DONE = "DONE", "Done"
+        CANCELLED = "CANCELLED", "Cancelled"
+
+    class Priority(models.TextChoices):
+        P1 = "P1", "Critical"
+        P2 = "P2", "High"
+        P3 = "P3", "Normal"
+        P4 = "P4", "Low"
 
     objects = TenantManager()
 
@@ -57,14 +66,30 @@ class Task(models.Model):
     status = models.CharField(
         max_length=32,
         choices=Status.choices,
-        default=Status.OPEN,
+        default=Status.NOT_STARTED,
+    )
+
+    priority = models.CharField(
+        max_length=2,
+        choices=Priority.choices,
+        default=Priority.P3,
+    )
+
+    blocked_reason = models.TextField(
+        blank=True,
+        null=True,
+    )
+
+    due_date = models.DateField(
+        blank=True,
+        null=True,
     )
 
     # -------------------
     # OPTIMISTIC LOCKING
     # -------------------
     version = models.PositiveIntegerField(default=1)
-    
+
     # -------------------
     # AUDIT FIELDS
     # -------------------
@@ -102,6 +127,7 @@ class Task(models.Model):
     def __str__(self):
         return self.title
 
+
 class TaskHistory(models.Model):
 
     class Action(models.TextChoices):
@@ -135,10 +161,12 @@ class TaskHistory(models.Model):
 
     timestamp = models.DateTimeField(auto_now_add=True)
 
-    # Snapshot fields (immutable record)
+    # Snapshot fields
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     status = models.CharField(max_length=32)
+    priority = models.CharField(max_length=2,null=True,blank=True,)
+    due_date = models.DateField(null=True, blank=True)
 
     class Meta:
         ordering = ["-timestamp"]
@@ -158,9 +186,6 @@ class TaskHistory(models.Model):
     def __str__(self):
         return f"{self.task.id} - {self.action} - {self.timestamp}"
 
-    # -------------------
-    # MANAGE ATTACHEMENTS
-    # -------------------
 
 class TaskAttachment(models.Model):
     tenant = models.ForeignKey(
@@ -183,9 +208,7 @@ class TaskAttachment(models.Model):
     )
 
     file = models.FileField(upload_to="task_attachments/")
-
     original_name = models.CharField(max_length=255)
-
     uploaded_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
