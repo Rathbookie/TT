@@ -80,7 +80,8 @@ class Task(models.Model):
         null=True,
     )
 
-    due_date = models.DateField(
+    # ✅ CHANGED FROM DateField → DateTimeField
+    due_date = models.DateTimeField(
         blank=True,
         null=True,
     )
@@ -122,6 +123,7 @@ class Task(models.Model):
         indexes = [
             models.Index(fields=["tenant", "-created_at"]),
             models.Index(fields=["tenant", "is_deleted"]),
+            models.Index(fields=["tenant", "due_date"]),  # optional future optimization
         ]
 
     def __str__(self):
@@ -165,8 +167,10 @@ class TaskHistory(models.Model):
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     status = models.CharField(max_length=32)
-    priority = models.CharField(max_length=2,null=True,blank=True,)
-    due_date = models.DateField(null=True, blank=True)
+    priority = models.CharField(max_length=2, null=True, blank=True)
+
+    # ✅ CHANGED FROM DateField → DateTimeField
+    due_date = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ["-timestamp"]
