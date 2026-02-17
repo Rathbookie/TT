@@ -100,8 +100,15 @@ class TaskSerializer(serializers.ModelSerializer):
 
     def validate_title(self, value):
         value = value.strip()
+
         if not value:
             raise serializers.ValidationError("Title cannot be empty.")
+
+        if len(value) > 120:
+            raise serializers.ValidationError(
+                "Title cannot exceed 120 characters."
+            )
+
         return value
 
     def validate_status(self, value):
@@ -135,8 +142,10 @@ class TaskSerializer(serializers.ModelSerializer):
                 )
 
         # Determine final status
-        status = attrs.get("status", getattr(self.instance, "status", None))
-        blocked_reason = attrs.get("blocked_reason")
+        blocked_reason = attrs.get(
+            "blocked_reason",
+            getattr(self.instance, "blocked_reason", None)
+        )
 
         if status == Task.Status.BLOCKED and not blocked_reason:
             raise serializers.ValidationError(

@@ -48,7 +48,7 @@ class Task(models.Model):
         related_name="tasks",
     )
 
-    title = models.CharField(max_length=255)
+    title = models.CharField(max_length=120)
     description = models.TextField(blank=True)
 
     created_by = models.ForeignKey(
@@ -164,7 +164,7 @@ class TaskHistory(models.Model):
     timestamp = models.DateTimeField(auto_now_add=True)
 
     # Snapshot fields
-    title = models.CharField(max_length=255)
+    title = models.CharField(max_length=120)
     description = models.TextField(blank=True)
     status = models.CharField(max_length=32)
     priority = models.CharField(max_length=2, null=True, blank=True)

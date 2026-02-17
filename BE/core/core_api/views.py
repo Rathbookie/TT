@@ -26,6 +26,8 @@ from .serializers import TaskAttachmentSerializer
 
 from users.models import UserRole
 
+from core_api.pagination import TaskPagination
+
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
@@ -57,6 +59,7 @@ class TaskViewSet(ModelViewSet):
     serializer_class = TaskSerializer
     permission_classes = [IsAuthenticated, TaskPermission]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
+    pagination_class = TaskPagination
 
     def get_queryset(self):
         user = self.request.user
