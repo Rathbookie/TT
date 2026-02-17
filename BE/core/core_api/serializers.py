@@ -4,6 +4,34 @@ from users.models import User
 
 
 # ==============================
+# STATUS TRANSITION MAP
+# ==============================
+
+ALLOWED_TRANSITIONS = {
+    Task.Status.NOT_STARTED: [
+        Task.Status.IN_PROGRESS,
+        Task.Status.CANCELLED,
+    ],
+    Task.Status.IN_PROGRESS: [
+        Task.Status.BLOCKED,
+        Task.Status.WAITING,
+        Task.Status.CANCELLED,
+    ],
+    Task.Status.BLOCKED: [
+        Task.Status.IN_PROGRESS,
+        Task.Status.CANCELLED,
+    ],
+    Task.Status.WAITING: [
+        Task.Status.DONE,
+        Task.Status.IN_PROGRESS,
+        Task.Status.CANCELLED,
+    ],
+    Task.Status.DONE: [],
+    Task.Status.CANCELLED: [],
+}
+
+
+# ==============================
 # ATTACHMENT SERIALIZER
 # ==============================
 
@@ -134,25 +162,85 @@ class TaskSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         request = self.context["request"]
+        user = request.user
+        active_role = request.headers.get("X-Active-Role")
 
         if self.instance:
-            if self.instance.tenant != request.user.tenant:
+            if self.instance.tenant != user.tenant:
                 raise serializers.ValidationError(
                     "Cross-tenant modification forbidden."
                 )
 
-        # Determine final status
-        blocked_reason = attrs.get(
-            "blocked_reason",
-            getattr(self.instance, "blocked_reason", None)
-        )
+            current_status = self.instance.status
+            new_status = attrs.get("status", current_status)
 
-        if status == Task.Status.BLOCKED and not blocked_reason:
-            raise serializers.ValidationError(
-                {"blocked_reason": "Blocked tasks require a reason."}
+            # DONE can be reopened only by ADMIN
+            if current_status == Task.Status.DONE and new_status != current_status:
+                if active_role != "ADMIN":
+                    raise serializers.ValidationError(
+                        {"status": "Only admin can reopen completed tasks."}
+                    )
+
+            # CANCELLED is always terminal
+            if current_status == Task.Status.CANCELLED and new_status != current_status:
+                raise serializers.ValidationError(
+                    {"status": "Cancelled tasks cannot be modified."}
+                )
+
+            # Strict transition map
+            ALLOWED_TRANSITIONS = {
+                Task.Status.NOT_STARTED: [
+                    Task.Status.IN_PROGRESS,
+                    Task.Status.CANCELLED,
+                ],
+                Task.Status.IN_PROGRESS: [
+                    Task.Status.BLOCKED,
+                    Task.Status.WAITING,
+                    Task.Status.CANCELLED,
+                ],
+                Task.Status.BLOCKED: [
+                    Task.Status.IN_PROGRESS,
+                    Task.Status.CANCELLED,
+                ],
+                Task.Status.WAITING: [
+                    Task.Status.DONE,
+                    Task.Status.IN_PROGRESS,
+                    Task.Status.CANCELLED,
+                ],
+                Task.Status.DONE: [],
+                Task.Status.CANCELLED: [],
+            }
+
+            # Validate transition
+            if new_status != current_status:
+                allowed = ALLOWED_TRANSITIONS.get(current_status, [])
+                if new_status not in allowed:
+                    raise serializers.ValidationError(
+                        {"status": "Invalid status transition."}
+                    )
+
+            # Role enforcement
+            if active_role == "TASK_RECEIVER":
+                # Receiver cannot approve
+                if current_status == Task.Status.WAITING and new_status == Task.Status.DONE:
+                    raise serializers.ValidationError(
+                        {"status": "Only creator can approve task."}
+                    )
+
+
+            # BLOCKED rule
+            blocked_reason = attrs.get(
+                "blocked_reason",
+                getattr(self.instance, "blocked_reason", None)
             )
 
+            if new_status == Task.Status.BLOCKED and not blocked_reason:
+                raise serializers.ValidationError(
+                    {"blocked_reason": "Blocked tasks require a reason."}
+                )
+
         return attrs
+
 
     # -------------------------
     # UPDATE OVERRIDE
