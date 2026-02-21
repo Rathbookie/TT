@@ -30,7 +30,7 @@ class Task(models.Model):
         NOT_STARTED = "NOT_STARTED", "Not Started"
         IN_PROGRESS = "IN_PROGRESS", "In Progress"
         BLOCKED = "BLOCKED", "Blocked"
-        WAITING = "WAITING", "Waiting"
+        WAITING_REVIEW = "WAITING_REVIEW", "Waiting Review"
         DONE = "DONE", "Done"
         CANCELLED = "CANCELLED", "Cancelled"
 
@@ -136,6 +136,9 @@ class TaskHistory(models.Model):
         CREATED = "CREATED", "Created"
         UPDATED = "UPDATED", "Updated"
         SOFT_DELETED = "SOFT_DELETED", "Soft Deleted"
+        SUBMITTED = "SUBMITTED", "Submitted for Review"
+        APPROVED = "APPROVED", "Approved"
+        REJECTED = "REJECTED", "Rejected"
 
     tenant = models.ForeignKey(
         Tenant,
@@ -192,6 +195,11 @@ class TaskHistory(models.Model):
 
 
 class TaskAttachment(models.Model):
+
+    class Type(models.TextChoices):
+        REQUIREMENT = "REQUIREMENT", "Requirement"
+        SUBMISSION = "SUBMISSION", "Submission"
+
     tenant = models.ForeignKey(
         Tenant,
         on_delete=models.CASCADE,
@@ -213,6 +221,13 @@ class TaskAttachment(models.Model):
 
     file = models.FileField(upload_to="task_attachments/")
     original_name = models.CharField(max_length=255)
+
+    type = models.CharField(
+        max_length=20,
+        choices=Type.choices,
+        default=Type.REQUIREMENT,
+    )
+
     uploaded_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -220,6 +235,3 @@ class TaskAttachment(models.Model):
         indexes = [
             models.Index(fields=["tenant", "task"]),
         ]
-
-    def __str__(self):
-        return self.original_name

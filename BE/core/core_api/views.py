@@ -18,15 +18,19 @@ from core_api.serializers import TaskHistorySerializer
 from django.db import transaction
 from django.db.models import F
 from rest_framework import status
-from rest_framework.exceptions import ValidationError
-
-from rest_framework.parsers import MultiPartParser, FormParser
 from .models import TaskAttachment
 from .serializers import TaskAttachmentSerializer
 
 from users.models import UserRole
 
 from core_api.pagination import TaskPagination
+
+from django.db.models import F
+from rest_framework.exceptions import PermissionDenied, ValidationError
+from django.db import transaction
+
+from core_api.workflow import validate_transition
+from core_api.models import Task, TaskHistory
 
 
 @api_view(["GET"])
@@ -134,13 +138,17 @@ class TaskViewSet(ModelViewSet):
     )
 
 
+
     def update(self, request, *args, **kwargs):
         with transaction.atomic():
             instance = self.get_object()
 
+            # -----------------------------
+            # Tenant Protection
+            # -----------------------------
             if instance.tenant != request.user.tenant:
                 raise PermissionDenied("Cross-tenant modification forbidden.")
-            
+
             active_role = request.headers.get("X-Active-Role")
 
             user_roles = list(
@@ -151,19 +159,18 @@ class TaskViewSet(ModelViewSet):
             if active_role not in user_roles:
                 raise PermissionDenied("Invalid active role.")
 
-            # Permission logic
-            if active_role == "TASK_RECEIVER":
-                raise PermissionDenied("Task receivers cannot modify tasks.")
-
-            if active_role == "TASK_CREATOR" and instance.created_by != request.user:
-                raise PermissionDenied("You can only modify tasks you created.")
-
+            # -----------------------------
+            # Soft Delete / Final State Lock
+            # -----------------------------
             if instance.is_deleted:
                 raise PermissionDenied("Cannot modify deleted task.")
 
             if instance.status == Task.Status.DONE:
                 raise PermissionDenied("Completed tasks cannot be modified.")
 
+            # -----------------------------
+            # Version Lock
+            # -----------------------------
             client_version = request.data.get("version")
 
             if client_version is None:
@@ -175,10 +182,48 @@ class TaskViewSet(ModelViewSet):
                     status=status.HTTP_409_CONFLICT,
                 )
 
-            serializer = self.get_serializer(instance, 
-                                             data=request.data,
-                                             partial=True
+            # -----------------------------
+            # Receiver Field Restrictions
+            # -----------------------------
+            if active_role == "TASK_RECEIVER":
+                allowed_fields = {"status", "blocked_reason", "version"}
+
+                for field in request.data.keys():
+                    if field not in allowed_fields:
+                        raise PermissionDenied(
+                            "Task receivers can only update workflow fields."
+                        )
+
+            # -----------------------------
+            # Creator Ownership Enforcement
+            # -----------------------------
+            if active_role == "TASK_CREATOR":
+                if instance.created_by != request.user:
+                    raise PermissionDenied("You can only modify tasks you created.")
+
+            # -----------------------------
+            # FSM Enforcement
+            # -----------------------------
+            new_status = request.data.get("status")
+
+            old_status = instance.status
+
+            if new_status and new_status != old_status:
+                validate_transition(
+                    current_status=old_status,
+                    new_status=new_status,
+                    role=active_role,
+                )
+
+            # -----------------------------
+            # Save
+            # -----------------------------
+            serializer = self.get_serializer(
+                instance,
+                data=request.data,
+                partial=True,
             )
+
             serializer.is_valid(raise_exception=True)
 
             task = serializer.save(
@@ -188,10 +233,26 @@ class TaskViewSet(ModelViewSet):
 
             task.refresh_from_db()
 
+            # -----------------------------
+            # History Logic
+            # -----------------------------
+            history_action = TaskHistory.Action.UPDATED
+
+            if old_status != task.status:
+
+                if old_status == Task.Status.IN_PROGRESS and task.status == Task.Status.WAITING_REVIEW:
+                    history_action = TaskHistory.Action.SUBMITTED
+
+                elif old_status == Task.Status.WAITING_REVIEW and task.status == Task.Status.DONE:
+                    history_action = TaskHistory.Action.APPROVED
+
+                elif old_status == Task.Status.WAITING_REVIEW and task.status == Task.Status.IN_PROGRESS:
+                    history_action = TaskHistory.Action.REJECTED
+
             TaskHistory.objects.create(
                 tenant=task.tenant,
                 task=task,
-                action=TaskHistory.Action.UPDATED,
+                action=history_action,
                 performed_by=request.user,
                 title=task.title,
                 description=task.description,
@@ -265,17 +326,50 @@ class TaskViewSet(ModelViewSet):
         return Response(serializer.data)
     
     @action(
-    detail=True,
-    methods=["post"],
-    url_path="attachments",
-    parser_classes=[MultiPartParser, FormParser],
+        detail=True,
+        methods=["post"],
+        url_path="attachments",
+        parser_classes=[MultiPartParser, FormParser],
     )
     def upload_attachment(self, request, pk=None):
         task = self.get_object()
 
+        # -----------------------------
+        # Tenant Safety
+        # -----------------------------
         if task.tenant != request.user.tenant:
             raise PermissionDenied("Cross-tenant upload forbidden.")
 
+        active_role = request.headers.get("X-Active-Role")
+
+        attachment_type = (
+            TaskAttachment.Type.SUBMISSION
+            if active_role == "TASK_RECEIVER"
+            else TaskAttachment.Type.REQUIREMENT
+        )
+
+        user_roles = list(
+            UserRole.objects.filter(
+                user=request.user,
+                tenant=request.user.tenant
+            ).values_list("role__name", flat=True)
+        )
+
+        if active_role not in user_roles:
+            raise PermissionDenied("Invalid active role.")
+
+        # -----------------------------
+        # Receiver Restriction
+        # -----------------------------
+        if active_role == "TASK_RECEIVER":
+            if task.status != Task.Status.IN_PROGRESS:
+                raise PermissionDenied(
+                    "You can only upload files while task is IN_PROGRESS."
+                )
+
+        # -----------------------------
+        # File Validation
+        # -----------------------------
         if "file" not in request.FILES:
             return Response(
                 {"detail": "No file provided."},
@@ -284,16 +378,25 @@ class TaskViewSet(ModelViewSet):
 
         uploaded_file = request.FILES["file"]
 
+        # -----------------------------
+        # Save Attachment
+        # -----------------------------
         attachment = TaskAttachment.objects.create(
             tenant=request.user.tenant,
             task=task,
             uploaded_by=request.user,
             file=uploaded_file,
             original_name=uploaded_file.name,
+            type=attachment_type,
         )
 
-        serializer = TaskAttachmentSerializer(attachment,context={"request": request})
+        serializer = TaskAttachmentSerializer(
+            attachment,
+            context={"request": request}
+        )
+
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+
     
     @action(
     detail=True,

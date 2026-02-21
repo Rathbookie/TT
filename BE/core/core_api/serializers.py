@@ -14,14 +14,14 @@ ALLOWED_TRANSITIONS = {
     ],
     Task.Status.IN_PROGRESS: [
         Task.Status.BLOCKED,
-        Task.Status.WAITING,
+        Task.Status.WAITING_REVIEW,
         Task.Status.CANCELLED,
     ],
     Task.Status.BLOCKED: [
         Task.Status.IN_PROGRESS,
         Task.Status.CANCELLED,
     ],
-    Task.Status.WAITING: [
+    Task.Status.WAITING_REVIEW: [
         Task.Status.DONE,
         Task.Status.IN_PROGRESS,
         Task.Status.CANCELLED,
@@ -47,11 +47,13 @@ class TaskAttachmentSerializer(serializers.ModelSerializer):
             "original_name",
             "uploaded_by",
             "uploaded_at",
+            "type", 
         ]
         read_only_fields = [
             "id",
             "uploaded_by",
             "uploaded_at",
+            "type", 
         ]
 
     def get_file(self, obj):
@@ -195,14 +197,14 @@ class TaskSerializer(serializers.ModelSerializer):
                 ],
                 Task.Status.IN_PROGRESS: [
                     Task.Status.BLOCKED,
-                    Task.Status.WAITING,
+                    Task.Status.WAITING_REVIEW,
                     Task.Status.CANCELLED,
                 ],
                 Task.Status.BLOCKED: [
                     Task.Status.IN_PROGRESS,
                     Task.Status.CANCELLED,
                 ],
-                Task.Status.WAITING: [
+                Task.Status.WAITING_REVIEW: [
                     Task.Status.DONE,
                     Task.Status.IN_PROGRESS,
                     Task.Status.CANCELLED,
@@ -222,7 +224,7 @@ class TaskSerializer(serializers.ModelSerializer):
             # Role enforcement
             if active_role == "TASK_RECEIVER":
                 # Receiver cannot approve
-                if current_status == Task.Status.WAITING and new_status == Task.Status.DONE:
+                if current_status == Task.Status.WAITING_REVIEW and new_status == Task.Status.DONE:
                     raise serializers.ValidationError(
                         {"status": "Only creator can approve task."}
                     )

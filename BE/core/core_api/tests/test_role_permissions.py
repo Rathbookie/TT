@@ -149,3 +149,110 @@ class RolePermissionTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.data["results"]), 0)
+
+
+# -------------------------
+    # FSM TRANSITION TESTS
+    # -------------------------
+
+    def test_receiver_can_start_task(self):
+        self.task.status = "NOT_STARTED"
+        self.task.version = 1
+        self.task.save()
+
+        self.client.force_authenticate(user=self.receiver)
+
+        response = self.client.patch(
+            reverse("tasks-detail", args=[self.task.id]),
+            {
+                "status": "IN_PROGRESS",
+                "version": self.task.version,
+            },
+            HTTP_X_ACTIVE_ROLE="TASK_RECEIVER"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.status, "IN_PROGRESS")
+
+
+    def test_receiver_can_submit_for_review(self):
+        self.task.status = "IN_PROGRESS"
+        self.task.version = 1
+        self.task.save()
+
+        self.client.force_authenticate(user=self.receiver)
+
+        response = self.client.patch(
+            reverse("tasks-detail", args=[self.task.id]),
+            {
+                "status": "WAITING_REVIEW",
+                "version": self.task.version,
+            },
+            HTTP_X_ACTIVE_ROLE="TASK_RECEIVER"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.status, "WAITING_REVIEW")
+
+
+    def test_receiver_cannot_approve_task(self):
+        self.task.status = "WAITING_REVIEW"
+        self.task.version = 1
+        self.task.save()
+
+        self.client.force_authenticate(user=self.receiver)
+
+        response = self.client.patch(
+            reverse("tasks-detail", args=[self.task.id]),
+            {
+                "status": "DONE",
+                "version": self.task.version,
+            },
+            HTTP_X_ACTIVE_ROLE="TASK_RECEIVER"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
+    def test_creator_can_approve_task(self):
+        self.task.status = "WAITING_REVIEW"
+        self.task.version = 1
+        self.task.save()
+
+        self.client.force_authenticate(user=self.creator)
+
+        response = self.client.patch(
+            reverse("tasks-detail", args=[self.task.id]),
+            {
+                "status": "DONE",
+                "version": self.task.version,
+            },
+            HTTP_X_ACTIVE_ROLE="TASK_CREATOR"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.status, "DONE")
+
+
+    def test_creator_can_reject_task(self):
+        self.task.status = "WAITING_REVIEW"
+        self.task.version = 1
+        self.task.save()
+
+        self.client.force_authenticate(user=self.creator)
+
+        response = self.client.patch(
+            reverse("tasks-detail", args=[self.task.id]),
+            {
+                "status": "IN_PROGRESS",
+                "version": self.task.version,
+            },
+            HTTP_X_ACTIVE_ROLE="TASK_CREATOR"
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.status, "IN_PROGRESS")
