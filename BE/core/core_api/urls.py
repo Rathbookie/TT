@@ -3,6 +3,7 @@ from rest_framework.routers import DefaultRouter
 
 from users.views import CustomTokenObtainPairView, TenantUserListView
 from .views import health, TaskViewSet, me
+from .views_admin import AdminDashboardView  # ADD THIS
 
 router = DefaultRouter()
 router.register("tasks", TaskViewSet, basename="tasks")
@@ -16,6 +17,9 @@ urlpatterns = [
 
     # Tenant users endpoint
     path("users/", TenantUserListView.as_view(), name="tenant-users"),
+
+    # Admin dashboard endpoint
+    path("admin/dashboard/", AdminDashboardView.as_view(), name="admin-dashboard"),
 ]
 
 urlpatterns += router.urls

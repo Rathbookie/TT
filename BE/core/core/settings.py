@@ -50,6 +50,7 @@ INSTALLED_APPS = [
     "authx",
     "core_api",
     "context",
+    "workflows",
 ]
 
 AUTH_USER_MODEL = "users.User"

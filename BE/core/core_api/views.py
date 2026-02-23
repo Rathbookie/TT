@@ -1,23 +1,22 @@
 from django.db.models import Q
 from django.utils import timezone
+from django.db import transaction
+from django.db.models import F
 
 from rest_framework.response import Response
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.viewsets import ModelViewSet
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
+from rest_framework import status
 
 
 from core_api.serializers import TaskSerializer
 from core_api.permissions import TaskPermission
 from core_api.models import Task, TaskHistory
 from core_api.serializers import TaskHistorySerializer
-
-from django.db import transaction
-from django.db.models import F
-from rest_framework import status
 from .models import TaskAttachment
 from .serializers import TaskAttachmentSerializer
 
@@ -25,12 +24,13 @@ from users.models import UserRole
 
 from core_api.pagination import TaskPagination
 
-from django.db.models import F
-from rest_framework.exceptions import PermissionDenied, ValidationError
-from django.db import transaction
-
 from core_api.workflow import validate_transition
-from core_api.models import Task, TaskHistory
+from workflows.utils import (
+    get_default_workflow_for_tenant,
+    get_first_stage,
+    get_stage_by_name,
+    validate_stage_transition,
+)
 
 
 @api_view(["GET"])
@@ -120,10 +120,17 @@ class TaskViewSet(ModelViewSet):
         if active_role not in ["TASK_CREATOR", "ADMIN"]:
             raise PermissionDenied("You do not have permission to create tasks.")
 
-        task = serializer.save(
-            tenant=tenant,
-            created_by=user,
-        )
+        save_kwargs = {
+            "tenant": tenant,
+            "created_by": user,
+        }
+
+        default_workflow = get_default_workflow_for_tenant(tenant)
+        if default_workflow:
+            save_kwargs["workflow"] = default_workflow
+            save_kwargs["stage"] = get_first_stage(default_workflow)
+
+        task = serializer.save(**save_kwargs)
 
         TaskHistory.objects.create(
             tenant=task.tenant,
@@ -165,9 +172,6 @@ class TaskViewSet(ModelViewSet):
             if instance.is_deleted:
                 raise PermissionDenied("Cannot modify deleted task.")
 
-            if instance.status == Task.Status.DONE:
-                raise PermissionDenied("Completed tasks cannot be modified.")
-
             # -----------------------------
             # Version Lock
             # -----------------------------
@@ -176,7 +180,12 @@ class TaskViewSet(ModelViewSet):
             if client_version is None:
                 raise ValidationError({"version": "Version is required."})
 
-            if int(client_version) != instance.version:
+            try:
+                client_version = int(client_version)
+            except (TypeError, ValueError):
+                raise ValidationError({"version": "Version must be a valid integer."})
+
+            if client_version != instance.version:
                 return Response(
                     {"detail": "Conflict detected. Task was modified by another user."},
                     status=status.HTTP_409_CONFLICT,
@@ -208,12 +217,22 @@ class TaskViewSet(ModelViewSet):
 
             old_status = instance.status
 
+            if old_status == Task.Status.DONE:
+                requested_status = new_status or old_status
+                if requested_status != old_status and active_role != "ADMIN":
+                    raise PermissionDenied("Completed tasks can only be reopened by admin.")
+
             if new_status and new_status != old_status:
                 validate_transition(
                     current_status=old_status,
                     new_status=new_status,
                     role=active_role,
                 )
+
+                if instance.workflow_id and instance.stage_id:
+                    new_stage = get_stage_by_name(instance.workflow, new_status)
+                    if new_stage is not None:
+                        validate_stage_transition(instance, new_stage, active_role)
 
             # -----------------------------
             # Save
@@ -232,6 +251,12 @@ class TaskViewSet(ModelViewSet):
             )
 
             task.refresh_from_db()
+
+            if new_status and old_status != task.status and task.workflow_id:
+                mapped_stage = get_stage_by_name(task.workflow, task.status)
+                if mapped_stage is not None and task.stage_id != mapped_stage.id:
+                    task.stage = mapped_stage
+                    task.save(update_fields=["stage"])
 
             # -----------------------------
             # History Logic
@@ -409,6 +434,17 @@ class TaskViewSet(ModelViewSet):
         if task.tenant != request.user.tenant:
             raise PermissionDenied("Cross-tenant deletion forbidden.")
 
+        active_role = request.headers.get("X-Active-Role")
+        user_roles = list(
+            UserRole.objects.filter(
+                user=request.user,
+                tenant=request.user.tenant
+            ).values_list("role__name", flat=True)
+        )
+
+        if active_role not in user_roles:
+            raise PermissionDenied("Invalid active role.")
+
         try:
             attachment = TaskAttachment.objects.get(
                 id=attachment_id,
@@ -417,6 +453,20 @@ class TaskViewSet(ModelViewSet):
             )
         except TaskAttachment.DoesNotExist:
             return Response(status=status.HTTP_404_NOT_FOUND)
+
+        if active_role == "TASK_RECEIVER":
+            if task.status != Task.Status.IN_PROGRESS:
+                raise PermissionDenied(
+                    "Task receivers can only delete files while task is IN_PROGRESS."
+                )
+            if attachment.type != TaskAttachment.Type.SUBMISSION:
+                raise PermissionDenied("Task receivers can only delete submission files.")
+            if attachment.uploaded_by_id != request.user.id:
+                raise PermissionDenied("You can only delete files you uploaded.")
+
+        if active_role == "TASK_CREATOR":
+            if attachment.type != TaskAttachment.Type.REQUIREMENT:
+                raise PermissionDenied("Task creators can only delete requirement files.")
 
         attachment.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)

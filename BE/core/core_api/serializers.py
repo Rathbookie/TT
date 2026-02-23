@@ -26,7 +26,10 @@ ALLOWED_TRANSITIONS = {
         Task.Status.IN_PROGRESS,
         Task.Status.CANCELLED,
     ],
-    Task.Status.DONE: [],
+    Task.Status.DONE: [
+        Task.Status.IN_PROGRESS,
+        Task.Status.CANCELLED,
+    ],
     Task.Status.CANCELLED: [],
 }
 
@@ -209,7 +212,10 @@ class TaskSerializer(serializers.ModelSerializer):
                     Task.Status.IN_PROGRESS,
                     Task.Status.CANCELLED,
                 ],
-                Task.Status.DONE: [],
+                Task.Status.DONE: [
+                    Task.Status.IN_PROGRESS,
+                    Task.Status.CANCELLED,
+                ],
                 Task.Status.CANCELLED: [],
             }
 

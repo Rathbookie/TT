@@ -1,6 +1,7 @@
 from context.models import Tenant
 from django.db import models
 from django.conf import settings
+from workflows.models import Workflow, WorkflowStage
 
 User = settings.AUTH_USER_MODEL
 
@@ -67,6 +68,22 @@ class Task(models.Model):
         max_length=32,
         choices=Status.choices,
         default=Status.NOT_STARTED,
+    )
+
+    workflow = models.ForeignKey(
+        Workflow,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="tasks",
+    )
+
+    stage = models.ForeignKey(
+        WorkflowStage,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="tasks",
     )
 
     priority = models.CharField(
