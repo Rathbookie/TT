@@ -1,5 +1,6 @@
 from django.db import models
 from django.db.models import Q
+from django.conf import settings
 
 from context.models import Tenant
 
@@ -12,6 +13,9 @@ class Workflow(models.Model):
     )
     name = models.CharField(max_length=120)
     is_default = models.BooleanField(default=False)
+    is_published = models.BooleanField(default=False)
+    published_at = models.DateTimeField(null=True, blank=True)
+    version = models.PositiveIntegerField(default=1)
 
     class Meta:
         ordering = ["name"]
@@ -40,6 +44,8 @@ class WorkflowStage(models.Model):
     name = models.CharField(max_length=64)
     order = models.PositiveIntegerField()
     is_terminal = models.BooleanField(default=False)
+    requires_attachments = models.BooleanField(default=False)
+    requires_approval = models.BooleanField(default=False)
 
     class Meta:
         ordering = ["order"]
@@ -90,3 +96,156 @@ class WorkflowTransition(models.Model):
             f"{self.to_stage.name} ({self.allowed_role})"
         )
 
+
+class WorkflowPreset(models.Model):
+    slug = models.SlugField(unique=True)
+    title = models.CharField(max_length=120)
+    description = models.TextField()
+    color = models.CharField(max_length=20, default="blue")
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["title"]
+
+    def __str__(self):
+        return self.title
+
+
+class WorkflowPresetStage(models.Model):
+    preset = models.ForeignKey(
+        WorkflowPreset,
+        on_delete=models.CASCADE,
+        related_name="stages",
+    )
+    name = models.CharField(max_length=64)
+    order = models.PositiveIntegerField()
+
+    class Meta:
+        ordering = ["order"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["preset", "name"],
+                name="uniq_preset_stage_name",
+            ),
+            models.UniqueConstraint(
+                fields=["preset", "order"],
+                name="uniq_preset_stage_order",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.preset.title}: {self.name}"
+
+
+class WorkflowPresetWidget(models.Model):
+    preset = models.ForeignKey(
+        WorkflowPreset,
+        on_delete=models.CASCADE,
+        related_name="widgets",
+    )
+    name = models.CharField(max_length=120)
+    order = models.PositiveIntegerField()
+
+    class Meta:
+        ordering = ["order"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["preset", "name"],
+                name="uniq_preset_widget_name",
+            ),
+            models.UniqueConstraint(
+                fields=["preset", "order"],
+                name="uniq_preset_widget_order",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.preset.title}: {self.name}"
+
+
+class ModuleDefinition(models.Model):
+    key = models.SlugField(unique=True)
+    name = models.CharField(max_length=120)
+    description = models.TextField()
+    category = models.CharField(max_length=40)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
+
+
+class TenantModule(models.Model):
+    tenant = models.ForeignKey(
+        Tenant,
+        on_delete=models.CASCADE,
+        related_name="tenant_modules",
+    )
+    module = models.ForeignKey(
+        ModuleDefinition,
+        on_delete=models.CASCADE,
+        related_name="tenant_states",
+    )
+    is_enabled = models.BooleanField(default=False)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tenant", "module"],
+                name="uniq_tenant_module",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.tenant} - {self.module.name} ({self.is_enabled})"
+
+
+class DashboardConfig(models.Model):
+    class Visibility(models.TextChoices):
+        PRIVATE = "PRIVATE", "Private"
+        INTERNAL = "INTERNAL", "Shared Internal"
+        PUBLIC = "PUBLIC", "Public Link"
+
+    tenant = models.ForeignKey(
+        Tenant,
+        on_delete=models.CASCADE,
+        related_name="dashboard_configs",
+    )
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="owned_dashboards",
+    )
+    name = models.CharField(max_length=120, default="Dashboard")
+    visibility = models.CharField(
+        max_length=20,
+        choices=Visibility.choices,
+        default=Visibility.INTERNAL,
+    )
+    is_default = models.BooleanField(default=True)
+    global_filters = models.JSONField(default=dict, blank=True)
+    widgets = models.JSONField(default=list, blank=True)
+    auto_refresh_seconds = models.PositiveIntegerField(default=30)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name", "-updated_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tenant", "name"],
+                name="uniq_dashboard_name_per_tenant",
+            ),
+            models.UniqueConstraint(
+                fields=["tenant"],
+                condition=Q(is_default=True),
+                name="uniq_default_dashboard_per_tenant",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.tenant} - {self.name}"

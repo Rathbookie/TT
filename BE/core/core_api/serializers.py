@@ -1,6 +1,13 @@
 from rest_framework import serializers
 from .models import Task, TaskHistory, TaskAttachment
 from users.models import User
+from workflows.models import Workflow, WorkflowStage
+
+
+def normalize_role_value(value):
+    if value is None:
+        return None
+    return str(value).strip().upper().replace(" ", "_")
 
 
 # ==============================
@@ -89,6 +96,8 @@ class TaskSerializer(serializers.ModelSerializer):
 
     assigned_to = TaskUserSerializer(read_only=True)
     created_by = TaskUserSerializer(read_only=True)
+    workflow = serializers.SerializerMethodField()
+    stage = serializers.SerializerMethodField()
 
     attachments = TaskAttachmentSerializer(
         many=True,
@@ -112,6 +121,8 @@ class TaskSerializer(serializers.ModelSerializer):
             "assigned_to_id",
             "created_by",
             "status",
+            "workflow",
+            "stage",
             "priority",
             "blocked_reason",
             "due_date",
@@ -168,7 +179,7 @@ class TaskSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         request = self.context["request"]
         user = request.user
-        active_role = request.headers.get("X-Active-Role")
+        active_role = normalize_role_value(request.headers.get("X-Active-Role"))
 
         if self.instance:
             if self.instance.tenant != user.tenant:
@@ -270,6 +281,26 @@ class TaskSerializer(serializers.ModelSerializer):
             validated_data["blocked_reason"] = None
 
         return super().update(instance, validated_data)
+
+    def get_workflow(self, obj):
+        if not obj.workflow_id:
+            return None
+        workflow = (
+            Workflow.objects.filter(id=obj.workflow_id)
+            .values("id", "name", "is_default")
+            .first()
+        )
+        return workflow
+
+    def get_stage(self, obj):
+        if not obj.stage_id:
+            return None
+        stage = (
+            WorkflowStage.objects.filter(id=obj.stage_id)
+            .values("id", "name", "order", "is_terminal")
+            .first()
+        )
+        return stage
 
 
 # ==============================

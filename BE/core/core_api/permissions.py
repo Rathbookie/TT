@@ -16,7 +16,7 @@ class IsAdminRole(BasePermission):
 
         return user.user_roles.filter(
             tenant_id=user.tenant_id,
-            role__name=Role.ADMIN,
+            role__name__iexact=Role.ADMIN,
         ).exists()
     
 class TaskPermission(BasePermission):

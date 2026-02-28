@@ -9,6 +9,11 @@ from .models import User, UserRole
 
 from core_api.serializers import TaskUserSerializer
 
+def normalize_role_value(value):
+    if value is None:
+        return None
+    return str(value).strip().upper().replace(" ", "_")
+
 
 class CustomTokenObtainPairView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer
@@ -24,12 +29,18 @@ class TenantUserListView(generics.ListAPIView):
         user = self.request.user
         tenant = user.tenant
 
-        active_role = self.request.headers.get("X-Active-Role")
+        active_role = normalize_role_value(self.request.headers.get("X-Active-Role"))
 
-        user_roles = list(
-            UserRole.objects.filter(user=user, tenant=tenant)
-            .values_list("role__name", flat=True)
-        )
+        user_roles = {
+            normalized
+            for normalized in (
+                normalize_role_value(role)
+                for role in UserRole.objects.filter(user=user, tenant=tenant).values_list(
+                    "role__name", flat=True
+                )
+            )
+            if normalized
+        }
 
         if active_role not in user_roles:
             raise PermissionDenied("Invalid active role.")

@@ -15,5 +15,5 @@ def is_admin(user):
 
     return user.user_roles.filter(
         tenant=user.tenant,
-        role__name="ADMIN"
+        role__name__iexact="ADMIN"
     ).exists()

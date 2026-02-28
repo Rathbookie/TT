@@ -32,6 +32,22 @@ from workflows.utils import (
     validate_stage_transition,
 )
 
+def normalize_role_value(value):
+    if value is None:
+        return None
+    return str(value).strip().upper().replace(" ", "_")
+
+
+def get_normalized_user_roles(user, tenant):
+    raw_roles = UserRole.objects.filter(user=user, tenant=tenant).values_list(
+        "role__name", flat=True
+    )
+    return {
+        normalized
+        for normalized in (normalize_role_value(role) for role in raw_roles)
+        if normalized
+    }
+
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
@@ -77,13 +93,10 @@ class TaskViewSet(ModelViewSet):
             is_deleted=False
         )
 
-        active_role = self.request.headers.get("X-Active-Role")
+        active_role = normalize_role_value(self.request.headers.get("X-Active-Role"))
 
         # Fetch roles assigned to this user in this tenant
-        user_roles = list(
-            UserRole.objects.filter(user=user, tenant=tenant)
-            .values_list("role__name", flat=True)
-        )
+        user_roles = get_normalized_user_roles(user, tenant)
 
         # If client sends invalid role → deny access
         if active_role not in user_roles:
@@ -98,6 +111,16 @@ class TaskViewSet(ModelViewSet):
         elif active_role == "ADMIN":
             pass  # Full tenant access
 
+        include_terminal = (
+            str(self.request.query_params.get("include_terminal", "")).lower()
+            in {"1", "true", "yes"}
+        )
+        if not include_terminal:
+            qs = qs.exclude(
+                Q(status__in=[Task.Status.DONE, Task.Status.CANCELLED])
+                | Q(stage__is_terminal=True)
+            )
+
         return qs
     
 
@@ -105,12 +128,9 @@ class TaskViewSet(ModelViewSet):
         user = self.request.user
         tenant = user.tenant
 
-        active_role = self.request.headers.get("X-Active-Role")
+        active_role = normalize_role_value(self.request.headers.get("X-Active-Role"))
 
-        user_roles = list(
-            UserRole.objects.filter(user=user, tenant=tenant)
-            .values_list("role__name", flat=True)
-        )
+        user_roles = get_normalized_user_roles(user, tenant)
 
         # Validate active role exists and belongs to user
         if active_role not in user_roles:
@@ -156,12 +176,9 @@ class TaskViewSet(ModelViewSet):
             if instance.tenant != request.user.tenant:
                 raise PermissionDenied("Cross-tenant modification forbidden.")
 
-            active_role = request.headers.get("X-Active-Role")
+            active_role = normalize_role_value(request.headers.get("X-Active-Role"))
 
-            user_roles = list(
-                UserRole.objects.filter(user=request.user, tenant=request.user.tenant)
-                .values_list("role__name", flat=True)
-            )
+            user_roles = get_normalized_user_roles(request.user, request.user.tenant)
 
             if active_role not in user_roles:
                 raise PermissionDenied("Invalid active role.")
@@ -291,11 +308,8 @@ class TaskViewSet(ModelViewSet):
 
     def perform_destroy(self, instance):
 
-        active_role = self.request.headers.get("X-Active-Role")
-        user_roles = list(
-            UserRole.objects.filter(user=self.request.user, tenant=self.request.user.tenant)
-            .values_list("role__name", flat=True)
-        )
+        active_role = normalize_role_value(self.request.headers.get("X-Active-Role"))
+        user_roles = get_normalized_user_roles(self.request.user, self.request.user.tenant)
 
         if active_role not in user_roles:
             raise PermissionDenied("Invalid active role.")
@@ -365,7 +379,7 @@ class TaskViewSet(ModelViewSet):
         if task.tenant != request.user.tenant:
             raise PermissionDenied("Cross-tenant upload forbidden.")
 
-        active_role = request.headers.get("X-Active-Role")
+        active_role = normalize_role_value(request.headers.get("X-Active-Role"))
 
         attachment_type = (
             TaskAttachment.Type.SUBMISSION
@@ -373,12 +387,7 @@ class TaskViewSet(ModelViewSet):
             else TaskAttachment.Type.REQUIREMENT
         )
 
-        user_roles = list(
-            UserRole.objects.filter(
-                user=request.user,
-                tenant=request.user.tenant
-            ).values_list("role__name", flat=True)
-        )
+        user_roles = get_normalized_user_roles(request.user, request.user.tenant)
 
         if active_role not in user_roles:
             raise PermissionDenied("Invalid active role.")
@@ -434,13 +443,8 @@ class TaskViewSet(ModelViewSet):
         if task.tenant != request.user.tenant:
             raise PermissionDenied("Cross-tenant deletion forbidden.")
 
-        active_role = request.headers.get("X-Active-Role")
-        user_roles = list(
-            UserRole.objects.filter(
-                user=request.user,
-                tenant=request.user.tenant
-            ).values_list("role__name", flat=True)
-        )
+        active_role = normalize_role_value(request.headers.get("X-Active-Role"))
+        user_roles = get_normalized_user_roles(request.user, request.user.tenant)
 
         if active_role not in user_roles:
             raise PermissionDenied("Invalid active role.")

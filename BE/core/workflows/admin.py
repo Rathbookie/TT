@@ -1,6 +1,16 @@
 from django.contrib import admin
 
-from .models import Workflow, WorkflowStage, WorkflowTransition
+from .models import (
+    Workflow,
+    WorkflowStage,
+    WorkflowTransition,
+    WorkflowPreset,
+    WorkflowPresetStage,
+    WorkflowPresetWidget,
+    ModuleDefinition,
+    TenantModule,
+    DashboardConfig,
+)
 
 
 @admin.register(Workflow)
@@ -28,3 +38,44 @@ class WorkflowTransitionAdmin(admin.ModelAdmin):
         "allowed_role",
     )
 
+
+@admin.register(WorkflowPreset)
+class WorkflowPresetAdmin(admin.ModelAdmin):
+    list_display = ("title", "slug", "color", "is_active")
+    list_filter = ("is_active", "color")
+    search_fields = ("title", "slug")
+
+
+@admin.register(WorkflowPresetStage)
+class WorkflowPresetStageAdmin(admin.ModelAdmin):
+    list_display = ("preset", "name", "order")
+    list_filter = ("preset",)
+    search_fields = ("preset__title", "name")
+
+
+@admin.register(WorkflowPresetWidget)
+class WorkflowPresetWidgetAdmin(admin.ModelAdmin):
+    list_display = ("preset", "name", "order")
+    list_filter = ("preset",)
+    search_fields = ("preset__title", "name")
+
+
+@admin.register(ModuleDefinition)
+class ModuleDefinitionAdmin(admin.ModelAdmin):
+    list_display = ("name", "key", "category", "is_active")
+    list_filter = ("category", "is_active")
+    search_fields = ("name", "key")
+
+
+@admin.register(TenantModule)
+class TenantModuleAdmin(admin.ModelAdmin):
+    list_display = ("tenant", "module", "is_enabled")
+    list_filter = ("tenant", "is_enabled", "module__category")
+    search_fields = ("tenant__name", "module__name")
+
+
+@admin.register(DashboardConfig)
+class DashboardConfigAdmin(admin.ModelAdmin):
+    list_display = ("name", "tenant", "visibility", "is_default", "updated_at")
+    list_filter = ("tenant", "visibility", "is_default")
+    search_fields = ("name", "tenant__name", "tenant__slug")

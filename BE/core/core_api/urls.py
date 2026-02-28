@@ -3,10 +3,14 @@ from rest_framework.routers import DefaultRouter
 
 from users.views import CustomTokenObtainPairView, TenantUserListView
 from .views import health, TaskViewSet, me
-from .views_admin import AdminDashboardView  # ADD THIS
+from .views_admin import AdminDashboardView, DashboardWidgetsView, DashboardConfigView
+from workflows.views import WorkflowViewSet, WorkflowPresetViewSet, TenantModuleViewSet
 
 router = DefaultRouter()
 router.register("tasks", TaskViewSet, basename="tasks")
+router.register("workflows", WorkflowViewSet, basename="workflows")
+router.register("workflow-presets", WorkflowPresetViewSet, basename="workflow-presets")
+router.register("modules", TenantModuleViewSet, basename="modules")
 
 urlpatterns = [
     path("health/", health),
@@ -20,6 +24,8 @@ urlpatterns = [
 
     # Admin dashboard endpoint
     path("admin/dashboard/", AdminDashboardView.as_view(), name="admin-dashboard"),
+    path("dashboard/widgets/", DashboardWidgetsView.as_view(), name="dashboard-widgets"),
+    path("dashboard/config/", DashboardConfigView.as_view(), name="dashboard-config"),
 ]
 
 urlpatterns += router.urls
