@@ -37,7 +37,7 @@ class TaskPermission(BasePermission):
         if obj.created_by_id == request.user.id:
             return True
 
-        if obj.assigned_to_id == request.user.id:
+        if obj.assignees.filter(id=request.user.id).exists():
             return True
 
         return False

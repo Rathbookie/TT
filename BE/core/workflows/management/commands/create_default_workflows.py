@@ -2,7 +2,7 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 
 from context.models import Tenant
-from core_api.models import Task
+from core_api.models import Task, BoardStatus
 from core_api.workflow import ALLOWED_TRANSITIONS
 from workflows.models import Workflow, WorkflowStage, WorkflowTransition
 
@@ -13,7 +13,6 @@ class Command(BaseCommand):
     @transaction.atomic
     def handle(self, *args, **options):
         tenants = Tenant.objects.all()
-        status_names = [status for status, _ in Task.Status.choices]
 
         created_workflows = 0
         assigned_tasks = 0
@@ -26,6 +25,15 @@ class Command(BaseCommand):
             )
             if created:
                 created_workflows += 1
+
+            status_names = list(
+                BoardStatus.objects.filter(board__tenant=tenant, is_default=True)
+                .order_by("order")
+                .values_list("name", flat=True)
+                .distinct()
+            )
+            if not status_names:
+                status_names = list(ALLOWED_TRANSITIONS.keys())
 
             stage_map = {}
             for idx, status_name in enumerate(status_names):
@@ -69,7 +77,7 @@ class Command(BaseCommand):
 
             tenant_tasks = Task.objects.filter(tenant=tenant)
             for task in tenant_tasks:
-                target_stage = stage_map.get(task.status)
+                target_stage = stage_map.get(task.status.name if task.status else "")
                 updates = {}
 
                 if task.workflow_id != workflow.id:

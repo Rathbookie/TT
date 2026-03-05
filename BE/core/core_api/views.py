@@ -1,7 +1,19 @@
-from django.db.models import Q
+"""
+core_api/views.py
+
+Updated for new model structure:
+  - Task.status is now FK to BoardStatus (no more Task.Status enum)
+  - Task.assignees is M2M (no more assigned_to single FK)
+  - Task.ref_id added
+  - TaskHistory uses status_name snapshot not status FK
+  - Filtering updated accordingly
+"""
+
+from django.db.models import Q, Exists, OuterRef
 from django.utils import timezone
 from django.db import transaction
 from django.db.models import F
+from django.shortcuts import get_object_or_404
 
 from rest_framework.response import Response
 from rest_framework.decorators import api_view, permission_classes
@@ -12,25 +24,41 @@ from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework import status
 
-
-from core_api.serializers import TaskSerializer
-from core_api.permissions import TaskPermission
-from core_api.models import Task, TaskHistory
-from core_api.serializers import TaskHistorySerializer
-from .models import TaskAttachment
-from .serializers import TaskAttachmentSerializer
+from core_api.serializers import (
+    TaskSerializer,
+    TaskHistorySerializer,
+    DivisionSerializer,
+    SectionSerializer,
+    BoardSerializer,
+    BoardStatusSerializer,
+    TaskProofSerializer,
+)
+from core_api.permissions import TaskPermission, IsAdminRole
+from core_api.models import (
+    Task,
+    TaskHistory,
+    TaskAttachment,
+    TaskProof,
+    TaskAssignee,
+    Division,
+    DivisionMember,
+    Section,
+    Board,
+    BoardStatus,
+)
+from core_api.serializers import TaskAttachmentSerializer
 
 from users.models import UserRole
 
 from core_api.pagination import TaskPagination
 
-from core_api.workflow import validate_transition
 from workflows.utils import (
     get_default_workflow_for_tenant,
     get_first_stage,
-    get_stage_by_name,
+    get_first_non_terminal_stage,
     validate_stage_transition,
 )
+
 
 def normalize_role_value(value):
     if value is None:
@@ -71,8 +99,182 @@ def me(request):
         "email": user.email,
         "first_name": user.first_name,
         "last_name": user.last_name,
+        "tenant_slug": tenant.slug,
         "roles": roles,
     })
+
+
+def _get_tenant_for_org_slug(user, org_slug):
+    """
+    Enforce org slug scoping against the authenticated user's tenant.
+    """
+    if not user or not user.is_authenticated:
+        raise PermissionDenied("Authentication required.")
+    tenant = user.tenant
+    if tenant is None or tenant.slug != org_slug:
+        raise PermissionDenied("Organisation slug does not match your active tenant.")
+    return tenant
+
+
+def _task_queryset_for_active_role(request, tenant):
+    """
+    Role-scoped task queryset used by slug-based task lookup endpoints.
+    Includes subtasks (no parent filter).
+    """
+    user = request.user
+    qs = (
+        Task.objects.for_tenant(tenant)
+        .filter(is_deleted=False)
+        .select_related("status", "board", "division", "created_by", "workflow", "stage", "parent")
+        .prefetch_related("assignees", "attachments")
+    )
+
+    active_role = normalize_role_value(request.headers.get("X-Active-Role"))
+    user_roles = get_normalized_user_roles(user, tenant)
+
+    if active_role not in user_roles:
+        return Task.objects.none()
+
+    if active_role == "TASK_RECEIVER":
+        has_assignees = Task.assignees.through.objects.filter(task_id=OuterRef("pk"))
+        qs = qs.annotate(_has_assignees=Exists(has_assignees)).filter(
+            Q(assignees=user) | Q(created_by__isnull=True, _has_assignees=False)
+        )
+    elif active_role == "TASK_CREATOR":
+        qs = qs.filter(Q(created_by=user) | Q(created_by__isnull=True))
+
+    return qs.distinct()
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def org_divisions(request, org_slug):
+    tenant = _get_tenant_for_org_slug(request.user, org_slug)
+    divisions = (
+        Division.objects.for_tenant(tenant)
+        .active()
+        .order_by("order", "name")
+    )
+    return Response(DivisionSerializer(divisions, many=True).data)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def org_division_detail(request, org_slug, division_slug):
+    tenant = _get_tenant_for_org_slug(request.user, org_slug)
+    division = get_object_or_404(
+        Division.objects.for_tenant(tenant).active(),
+        slug=division_slug,
+    )
+    return Response(DivisionSerializer(division).data)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def org_division_sections(request, org_slug, division_slug):
+    tenant = _get_tenant_for_org_slug(request.user, org_slug)
+    division = get_object_or_404(
+        Division.objects.for_tenant(tenant).active(),
+        slug=division_slug,
+    )
+    sections = (
+        Section.objects.for_tenant(tenant)
+        .active()
+        .filter(division=division)
+        .select_related("division")
+        .order_by("order", "name")
+    )
+    return Response(SectionSerializer(sections, many=True).data)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def org_division_members(request, org_slug, division_slug):
+    tenant = _get_tenant_for_org_slug(request.user, org_slug)
+    division = get_object_or_404(
+        Division.objects.for_tenant(tenant).active(),
+        slug=division_slug,
+    )
+    members = (
+        DivisionMember.objects.filter(division=division)
+        .select_related("user")
+        .order_by("joined_at")
+    )
+    payload = [
+        {
+            "id": member.user_id,
+            "full_name": f"{member.user.first_name} {member.user.last_name}".strip() or member.user.email,
+            "email": member.user.email,
+            "role": member.role,
+        }
+        for member in members
+    ]
+    return Response(payload)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def org_division_boards(request, org_slug, division_slug):
+    tenant = _get_tenant_for_org_slug(request.user, org_slug)
+    division = get_object_or_404(
+        Division.objects.for_tenant(tenant).active(),
+        slug=division_slug,
+    )
+    boards = (
+        Board.objects.for_tenant(tenant)
+        .active()
+        .filter(division=division, section__isnull=True)
+        .select_related("division", "section")
+        .prefetch_related("statuses")
+        .order_by("order", "name")
+    )
+    return Response(BoardSerializer(boards, many=True).data)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def org_section_boards(request, org_slug, division_slug, section_slug):
+    tenant = _get_tenant_for_org_slug(request.user, org_slug)
+    division = get_object_or_404(
+        Division.objects.for_tenant(tenant).active(),
+        slug=division_slug,
+    )
+    section = get_object_or_404(
+        Section.objects.for_tenant(tenant).active(),
+        division=division,
+        slug=section_slug,
+    )
+    boards = (
+        Board.objects.for_tenant(tenant)
+        .active()
+        .filter(section=section)
+        .select_related("division", "section")
+        .prefetch_related("statuses")
+        .order_by("order", "name")
+    )
+    return Response(BoardSerializer(boards, many=True).data)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def org_task_by_ref(request, org_slug, task_ref):
+    tenant = _get_tenant_for_org_slug(request.user, org_slug)
+    qs = _task_queryset_for_active_role(request, tenant)
+    task = get_object_or_404(qs, ref_id__iexact=task_ref)
+    return Response(TaskSerializer(task, context={"request": request}).data)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def org_subtask_by_ref(request, org_slug, task_ref, sub_ref):
+    tenant = _get_tenant_for_org_slug(request.user, org_slug)
+    qs = _task_queryset_for_active_role(request, tenant)
+    subtask = get_object_or_404(
+        qs,
+        parent__ref_id__iexact=task_ref,
+        ref_id__iexact=sub_ref,
+    )
+    return Response(TaskSerializer(subtask, context={"request": request}).data)
 
 
 class TaskViewSet(ModelViewSet):
@@ -90,53 +292,86 @@ class TaskViewSet(ModelViewSet):
         tenant = user.tenant
 
         qs = Task.objects.for_tenant(tenant).filter(
-            is_deleted=False
+            is_deleted=False,
+            parent=None,  # top-level tasks only by default; subtasks fetched separately
+        ).select_related(
+            "status", "board", "division", "created_by", "workflow", "stage"
+        ).prefetch_related(
+            "assignees", "attachments"
         )
 
         active_role = normalize_role_value(self.request.headers.get("X-Active-Role"))
-
-        # Fetch roles assigned to this user in this tenant
         user_roles = get_normalized_user_roles(user, tenant)
 
-        # If client sends invalid role → deny access
         if active_role not in user_roles:
             return qs.none()
 
+        # Role-scoped filtering
         if active_role == "TASK_RECEIVER":
-            qs = qs.filter(assigned_to=user)
-
+            # Include explicitly assigned tasks and legacy orphaned tasks
+            # (no creator + no assignees) to avoid hiding pre-migration data.
+            has_assignees = Task.assignees.through.objects.filter(task_id=OuterRef("pk"))
+            qs = qs.annotate(_has_assignees=Exists(has_assignees)).filter(
+                Q(assignees=user) |
+                Q(created_by__isnull=True, _has_assignees=False)
+            ).distinct()
         elif active_role == "TASK_CREATOR":
-            qs = qs.filter(created_by=user)
+            qs = qs.filter(
+                Q(created_by=user) |
+                Q(created_by__isnull=True)
+            )
+        # ADMIN sees all
 
-        elif active_role == "ADMIN":
-            pass  # Full tenant access
+        # Filter by board if provided
+        board_id = self.request.query_params.get("board")
+        if board_id:
+            qs = qs.filter(board_id=board_id)
 
+        # Filter by division (id or slug)
+        division = self.request.query_params.get("division")
+        if division:
+            if str(division).isdigit():
+                qs = qs.filter(division_id=int(division))
+            else:
+                qs = qs.filter(division__slug=division)
+
+        # Filter by section (id or slug)
+        section = self.request.query_params.get("section")
+        if section:
+            if str(section).isdigit():
+                qs = qs.filter(board__section_id=int(section))
+            else:
+                qs = qs.filter(board__section__slug=section)
+
+        # Filter by priority
+        priority = self.request.query_params.get("priority")
+        if priority:
+            qs = qs.filter(priority=priority)
+
+        # Exclude terminal statuses unless requested
         include_terminal = (
             str(self.request.query_params.get("include_terminal", "")).lower()
             in {"1", "true", "yes"}
         )
+        if self.action != "list":
+            include_terminal = True
         if not include_terminal:
             qs = qs.exclude(
-                Q(status__in=[Task.Status.DONE, Task.Status.CANCELLED])
-                | Q(stage__is_terminal=True)
+                Q(status__is_terminal=True) | Q(stage__is_terminal=True)
             )
 
         return qs
-    
 
     def perform_create(self, serializer):
         user = self.request.user
         tenant = user.tenant
 
         active_role = normalize_role_value(self.request.headers.get("X-Active-Role"))
-
         user_roles = get_normalized_user_roles(user, tenant)
 
-        # Validate active role exists and belongs to user
         if active_role not in user_roles:
             raise PermissionDenied("Invalid active role.")
 
-        # Only TASK_CREATOR or ADMIN can create tasks
         if active_role not in ["TASK_CREATOR", "ADMIN"]:
             raise PermissionDenied("You do not have permission to create tasks.")
 
@@ -145,10 +380,15 @@ class TaskViewSet(ModelViewSet):
             "created_by": user,
         }
 
-        default_workflow = get_default_workflow_for_tenant(tenant)
-        if default_workflow:
-            save_kwargs["workflow"] = default_workflow
-            save_kwargs["stage"] = get_first_stage(default_workflow)
+        selected_workflow = serializer.validated_data.get("workflow")
+        if selected_workflow:
+            save_kwargs["workflow"] = selected_workflow
+            save_kwargs["stage"] = get_first_stage(selected_workflow)
+        else:
+            default_workflow = get_default_workflow_for_tenant(tenant)
+            if default_workflow:
+                save_kwargs["workflow"] = default_workflow
+                save_kwargs["stage"] = get_first_stage(default_workflow)
 
         task = serializer.save(**save_kwargs)
 
@@ -159,44 +399,31 @@ class TaskViewSet(ModelViewSet):
             performed_by=user,
             title=task.title,
             description=task.description,
-            status=task.status,
+            status_name=task.status.name if task.status else "",
             priority=task.priority,
             due_date=task.due_date,
-    )
-
-
+        )
 
     def update(self, request, *args, **kwargs):
         with transaction.atomic():
             instance = self.get_object()
 
-            # -----------------------------
-            # Tenant Protection
-            # -----------------------------
-            if instance.tenant != request.user.tenant:
+            if instance.tenant_id != request.user.tenant_id:
                 raise PermissionDenied("Cross-tenant modification forbidden.")
 
             active_role = normalize_role_value(request.headers.get("X-Active-Role"))
-
             user_roles = get_normalized_user_roles(request.user, request.user.tenant)
 
             if active_role not in user_roles:
                 raise PermissionDenied("Invalid active role.")
 
-            # -----------------------------
-            # Soft Delete / Final State Lock
-            # -----------------------------
             if instance.is_deleted:
                 raise PermissionDenied("Cannot modify deleted task.")
 
-            # -----------------------------
-            # Version Lock
-            # -----------------------------
+            # Version check (optimistic locking)
             client_version = request.data.get("version")
-
             if client_version is None:
                 raise ValidationError({"version": "Version is required."})
-
             try:
                 client_version = int(client_version)
             except (TypeError, ValueError):
@@ -208,88 +435,96 @@ class TaskViewSet(ModelViewSet):
                     status=status.HTTP_409_CONFLICT,
                 )
 
-            # -----------------------------
-            # Receiver Field Restrictions
-            # -----------------------------
+            # Receiver field restrictions
+            update_data = request.data.copy()
             if active_role == "TASK_RECEIVER":
-                allowed_fields = {"status", "blocked_reason", "version"}
-
-                for field in request.data.keys():
+                allowed_fields = {"status_id", "status", "stage_id", "blocked_reason", "version"}
+                for field in update_data.keys():
                     if field not in allowed_fields:
                         raise PermissionDenied(
-                            "Task receivers can only update workflow fields."
+                            "Task receivers can only update status fields."
                         )
 
-            # -----------------------------
-            # Creator Ownership Enforcement
-            # -----------------------------
+            # Creator ownership
             if active_role == "TASK_CREATOR":
-                if instance.created_by != request.user:
+                if instance.created_by_id != request.user.id:
                     raise PermissionDenied("You can only modify tasks you created.")
 
-            # -----------------------------
-            # FSM Enforcement
-            # -----------------------------
-            new_status = request.data.get("status")
+            # Snapshot old status name for history
+            old_status_name = instance.status.name if instance.status else ""
 
-            old_status = instance.status
+            # Workflow switching strategy:
+            # reset to the first non-terminal stage of the selected workflow.
+            new_workflow_id = update_data.get("workflow_id")
+            if new_workflow_id not in (None, "", "null"):
+                try:
+                    new_workflow_id = int(new_workflow_id)
+                except (TypeError, ValueError):
+                    raise ValidationError({"workflow_id": "workflow_id must be a valid integer."})
 
-            if old_status == Task.Status.DONE:
-                requested_status = new_status or old_status
-                if requested_status != old_status and active_role != "ADMIN":
-                    raise PermissionDenied("Completed tasks can only be reopened by admin.")
+                if new_workflow_id != (instance.workflow_id or 0):
+                    target_workflow = instance.tenant.workflows.filter(id=new_workflow_id).first()
+                    if target_workflow is None:
+                        raise ValidationError({"workflow_id": "Workflow does not belong to this tenant."})
+                    target_stage = get_first_non_terminal_stage(target_workflow)
+                    update_data["stage_id"] = target_stage.id if target_stage else None
 
-            if new_status and new_status != old_status:
-                validate_transition(
-                    current_status=old_status,
-                    new_status=new_status,
-                    role=active_role,
-                )
+            # FSM enforcement
+            # Workflow stage transitions are validated only when stage_id is provided and workflow is unchanged.
+            new_stage_id = update_data.get("stage_id")
+            workflow_id_for_transition = update_data.get("workflow_id", instance.workflow_id)
+            if workflow_id_for_transition in ("", None, "null"):
+                workflow_id_for_transition = instance.workflow_id
+            try:
+                workflow_id_for_transition = int(workflow_id_for_transition)
+            except (TypeError, ValueError):
+                workflow_id_for_transition = instance.workflow_id
+            if (
+                new_stage_id
+                and instance.workflow_id
+                and instance.stage_id
+                and workflow_id_for_transition == instance.workflow_id
+            ):
+                try:
+                    new_stage_id = int(new_stage_id)
+                except (TypeError, ValueError):
+                    raise ValidationError({"stage_id": "stage_id must be a valid integer."})
 
-                if instance.workflow_id and instance.stage_id:
-                    new_stage = get_stage_by_name(instance.workflow, new_status)
-                    if new_stage is not None:
-                        validate_stage_transition(instance, new_stage, active_role)
+                if new_stage_id != instance.stage_id:
+                    new_stage = instance.workflow.stages.filter(id=new_stage_id).first()
+                    if new_stage is None:
+                        raise ValidationError({"stage_id": "Stage does not belong to this workflow."})
+                    validate_stage_transition(instance, new_stage, active_role)
 
-            # -----------------------------
             # Save
-            # -----------------------------
             serializer = self.get_serializer(
                 instance,
-                data=request.data,
+                data=update_data,
                 partial=True,
             )
-
             serializer.is_valid(raise_exception=True)
-
             task = serializer.save(
                 updated_by=request.user,
                 version=F("version") + 1,
             )
-
             task.refresh_from_db()
 
-            if new_status and old_status != task.status and task.workflow_id:
-                mapped_stage = get_stage_by_name(task.workflow, task.status)
-                if mapped_stage is not None and task.stage_id != mapped_stage.id:
-                    task.stage = mapped_stage
-                    task.save(update_fields=["stage"])
-
-            # -----------------------------
-            # History Logic
-            # -----------------------------
+            # History action classification
+            new_status_name = task.status.name if task.status else ""
             history_action = TaskHistory.Action.UPDATED
 
-            if old_status != task.status:
-
-                if old_status == Task.Status.IN_PROGRESS and task.status == Task.Status.WAITING_REVIEW:
+            if old_status_name != new_status_name:
+                if old_status_name == "In Progress" and new_status_name == "In Review":
                     history_action = TaskHistory.Action.SUBMITTED
-
-                elif old_status == Task.Status.WAITING_REVIEW and task.status == Task.Status.DONE:
+                elif old_status_name == "In Review" and new_status_name == "Done":
                     history_action = TaskHistory.Action.APPROVED
-
-                elif old_status == Task.Status.WAITING_REVIEW and task.status == Task.Status.IN_PROGRESS:
+                elif old_status_name == "In Review" and new_status_name == "In Progress":
                     history_action = TaskHistory.Action.REJECTED
+
+            # Build changes diff
+            changes = {}
+            if old_status_name != new_status_name:
+                changes["status"] = {"from": old_status_name, "to": new_status_name}
 
             TaskHistory.objects.create(
                 tenant=task.tenant,
@@ -298,16 +533,15 @@ class TaskViewSet(ModelViewSet):
                 performed_by=request.user,
                 title=task.title,
                 description=task.description,
-                status=task.status,
+                status_name=new_status_name,
                 priority=task.priority,
                 due_date=task.due_date,
+                changes=changes,
             )
 
             return Response(self.get_serializer(task).data)
 
-
     def perform_destroy(self, instance):
-
         active_role = normalize_role_value(self.request.headers.get("X-Active-Role"))
         user_roles = get_normalized_user_roles(self.request.user, self.request.user.tenant)
 
@@ -317,14 +551,14 @@ class TaskViewSet(ModelViewSet):
         if active_role == "TASK_RECEIVER":
             raise PermissionDenied("Task receivers cannot delete tasks.")
 
-        if active_role == "TASK_CREATOR" and instance.created_by != self.request.user:
+        if active_role == "TASK_CREATOR" and instance.created_by_id != self.request.user.id:
             raise PermissionDenied("You can only delete tasks you created.")
-        
-        if instance.tenant != self.request.user.tenant:
+
+        if instance.tenant_id != self.request.user.tenant_id:
             raise PermissionDenied("Cross-tenant deletion forbidden.")
 
         if instance.is_deleted:
-            return  # already deleted
+            return
 
         instance.is_deleted = True
         instance.deleted_at = timezone.now()
@@ -338,22 +572,21 @@ class TaskViewSet(ModelViewSet):
             performed_by=self.request.user,
             title=instance.title,
             description=instance.description,
-            status=instance.status,
+            status_name=instance.status.name if instance.status else "",
             priority=instance.priority,
             due_date=instance.due_date,
-    )
+        )
 
     @action(detail=True, methods=["get"], url_path="history")
     def history(self, request, pk=None):
         task = self.get_object()
 
-        # Tenant safety
-        if task.tenant != request.user.tenant:
+        if task.tenant_id != request.user.tenant_id:
             raise PermissionDenied("Cross-tenant access forbidden.")
 
         queryset = TaskHistory.objects.filter(
             task=task,
-            tenant=request.user.tenant
+            tenant=request.user.tenant,
         ).order_by("-timestamp")
 
         page = self.paginate_queryset(queryset)
@@ -363,7 +596,23 @@ class TaskViewSet(ModelViewSet):
 
         serializer = TaskHistorySerializer(queryset, many=True)
         return Response(serializer.data)
-    
+
+    @action(detail=True, methods=["get"], url_path="subtasks")
+    def subtasks(self, request, pk=None):
+        """Returns all subtasks for a given task."""
+        task = self.get_object()
+
+        if task.tenant_id != request.user.tenant_id:
+            raise PermissionDenied("Cross-tenant access forbidden.")
+
+        qs = Task.objects.filter(
+            parent=task,
+            is_deleted=False,
+        ).select_related("status", "created_by").prefetch_related("assignees")
+
+        serializer = self.get_serializer(qs, many=True)
+        return Response(serializer.data)
+
     @action(
         detail=True,
         methods=["post"],
@@ -373,13 +622,14 @@ class TaskViewSet(ModelViewSet):
     def upload_attachment(self, request, pk=None):
         task = self.get_object()
 
-        # -----------------------------
-        # Tenant Safety
-        # -----------------------------
-        if task.tenant != request.user.tenant:
+        if task.tenant_id != request.user.tenant_id:
             raise PermissionDenied("Cross-tenant upload forbidden.")
 
         active_role = normalize_role_value(request.headers.get("X-Active-Role"))
+        user_roles = get_normalized_user_roles(request.user, request.user.tenant)
+
+        if active_role not in user_roles:
+            raise PermissionDenied("Invalid active role.")
 
         attachment_type = (
             TaskAttachment.Type.SUBMISSION
@@ -387,23 +637,12 @@ class TaskViewSet(ModelViewSet):
             else TaskAttachment.Type.REQUIREMENT
         )
 
-        user_roles = get_normalized_user_roles(request.user, request.user.tenant)
-
-        if active_role not in user_roles:
-            raise PermissionDenied("Invalid active role.")
-
-        # -----------------------------
-        # Receiver Restriction
-        # -----------------------------
         if active_role == "TASK_RECEIVER":
-            if task.status != Task.Status.IN_PROGRESS:
+            if not task.status or task.status.name != "In Progress":
                 raise PermissionDenied(
-                    "You can only upload files while task is IN_PROGRESS."
+                    "You can only upload files while the task is In Progress."
                 )
 
-        # -----------------------------
-        # File Validation
-        # -----------------------------
         if "file" not in request.FILES:
             return Response(
                 {"detail": "No file provided."},
@@ -412,35 +651,32 @@ class TaskViewSet(ModelViewSet):
 
         uploaded_file = request.FILES["file"]
 
-        # -----------------------------
-        # Save Attachment
-        # -----------------------------
         attachment = TaskAttachment.objects.create(
             tenant=request.user.tenant,
             task=task,
             uploaded_by=request.user,
             file=uploaded_file,
             original_name=uploaded_file.name,
+            file_size=uploaded_file.size,
+            mime_type=uploaded_file.content_type,
             type=attachment_type,
         )
 
         serializer = TaskAttachmentSerializer(
             attachment,
-            context={"request": request}
+            context={"request": request},
         )
-
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
-    
     @action(
-    detail=True,
-    methods=["delete"],
-    url_path="attachments/(?P<attachment_id>[^/.]+)"
+        detail=True,
+        methods=["delete"],
+        url_path="attachments/(?P<attachment_id>[^/.]+)",
     )
     def delete_attachment(self, request, pk=None, attachment_id=None):
         task = self.get_object()
 
-        if task.tenant != request.user.tenant:
+        if task.tenant_id != request.user.tenant_id:
             raise PermissionDenied("Cross-tenant deletion forbidden.")
 
         active_role = normalize_role_value(request.headers.get("X-Active-Role"))
@@ -459,9 +695,9 @@ class TaskViewSet(ModelViewSet):
             return Response(status=status.HTTP_404_NOT_FOUND)
 
         if active_role == "TASK_RECEIVER":
-            if task.status != Task.Status.IN_PROGRESS:
+            if not task.status or task.status.name != "In Progress":
                 raise PermissionDenied(
-                    "Task receivers can only delete files while task is IN_PROGRESS."
+                    "Task receivers can only delete files while task is In Progress."
                 )
             if attachment.type != TaskAttachment.Type.SUBMISSION:
                 raise PermissionDenied("Task receivers can only delete submission files.")
@@ -474,4 +710,216 @@ class TaskViewSet(ModelViewSet):
 
         attachment.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
-        
+
+    @action(
+        detail=True,
+        methods=["get", "post"],
+        url_path="proofs",
+        parser_classes=[MultiPartParser, FormParser, JSONParser],
+    )
+    def proofs(self, request, pk=None):
+        task = self.get_object()
+        if task.tenant_id != request.user.tenant_id:
+            raise PermissionDenied("Cross-tenant access forbidden.")
+
+        active_role = normalize_role_value(request.headers.get("X-Active-Role"))
+        user_roles = get_normalized_user_roles(request.user, request.user.tenant)
+        if active_role not in user_roles:
+            raise PermissionDenied("Invalid active role.")
+
+        if request.method.lower() == "get":
+            proofs = TaskProof.objects.filter(task=task, tenant=request.user.tenant)
+            serializer = TaskProofSerializer(proofs, many=True, context={"request": request})
+            return Response(serializer.data)
+
+        is_terminal_task = bool(task.stage and task.stage.is_terminal) or bool(task.status and task.status.is_terminal)
+        if is_terminal_task:
+            raise PermissionDenied("Proofs cannot be added once task is terminal.")
+
+        serializer = TaskProofSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        proof = serializer.save(
+            task=task,
+            tenant=request.user.tenant,
+            submitted_by=request.user,
+        )
+        return Response(TaskProofSerializer(proof, context={"request": request}).data, status=status.HTTP_201_CREATED)
+
+    @action(
+        detail=True,
+        methods=["delete"],
+        url_path="proofs/(?P<proof_id>[^/.]+)",
+    )
+    def delete_proof(self, request, pk=None, proof_id=None):
+        task = self.get_object()
+        if task.tenant_id != request.user.tenant_id:
+            raise PermissionDenied("Cross-tenant deletion forbidden.")
+
+        proof = TaskProof.objects.filter(
+            id=proof_id,
+            task=task,
+            tenant=request.user.tenant,
+        ).first()
+        if not proof:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        active_role = normalize_role_value(request.headers.get("X-Active-Role"))
+        user_roles = get_normalized_user_roles(request.user, request.user.tenant)
+        if active_role not in user_roles:
+            raise PermissionDenied("Invalid active role.")
+        if active_role not in {"ADMIN", "TASK_CREATOR"} and proof.submitted_by_id != request.user.id:
+            raise PermissionDenied("You can only delete proofs you submitted.")
+
+        proof.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=["post"], url_path="assignees")
+    def add_assignee(self, request, pk=None):
+        task = self.get_object()
+        if task.tenant_id != request.user.tenant_id:
+            raise PermissionDenied("Cross-tenant update forbidden.")
+
+        active_role = normalize_role_value(request.headers.get("X-Active-Role"))
+        user_roles = get_normalized_user_roles(request.user, request.user.tenant)
+        if active_role not in user_roles:
+            raise PermissionDenied("Invalid active role.")
+        if active_role not in {"ADMIN", "TASK_CREATOR"}:
+            raise PermissionDenied("Only admin or task creator can add assignees.")
+
+        user_id = request.data.get("user_id")
+        try:
+            user_id = int(user_id)
+        except (TypeError, ValueError):
+            raise ValidationError({"user_id": "user_id must be a valid integer."})
+
+        assignee = request.user.tenant.users.filter(id=user_id).first()
+        if not assignee:
+            raise ValidationError({"user_id": "User does not belong to this tenant."})
+
+        TaskAssignee.objects.get_or_create(
+            task=task,
+            user=assignee,
+            defaults={"assigned_by": request.user},
+        )
+        task.refresh_from_db()
+        return Response(self.get_serializer(task).data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["delete"], url_path=r"assignees/(?P<user_id>[^/.]+)")
+    def remove_assignee(self, request, pk=None, user_id=None):
+        task = self.get_object()
+        if task.tenant_id != request.user.tenant_id:
+            raise PermissionDenied("Cross-tenant update forbidden.")
+
+        active_role = normalize_role_value(request.headers.get("X-Active-Role"))
+        user_roles = get_normalized_user_roles(request.user, request.user.tenant)
+        if active_role not in user_roles:
+            raise PermissionDenied("Invalid active role.")
+        if active_role not in {"ADMIN", "TASK_CREATOR"}:
+            raise PermissionDenied("Only admin or task creator can remove assignees.")
+
+        TaskAssignee.objects.filter(task=task, user_id=user_id).delete()
+        task.refresh_from_db()
+        return Response(self.get_serializer(task).data, status=status.HTTP_200_OK)
+
+
+class TenantHierarchyViewSet(ModelViewSet):
+    """Shared tenant scoping + admin-write behavior for hierarchy resources."""
+
+    def get_permissions(self):
+        if self.action in {"create", "update", "partial_update", "destroy"}:
+            return [IsAuthenticated(), IsAdminRole()]
+        return [IsAuthenticated()]
+
+
+class DivisionViewSet(TenantHierarchyViewSet):
+    serializer_class = DivisionSerializer
+    queryset = Division.objects.none()
+
+    def get_queryset(self):
+        return Division.objects.for_tenant(self.request.user.tenant).active().order_by("order", "name")
+
+    def perform_create(self, serializer):
+        serializer.save(tenant=self.request.user.tenant, created_by=self.request.user)
+
+
+class SectionViewSet(TenantHierarchyViewSet):
+    serializer_class = SectionSerializer
+    queryset = Section.objects.none()
+
+    def get_queryset(self):
+        return (
+            Section.objects.for_tenant(self.request.user.tenant)
+            .active()
+            .select_related("division")
+            .order_by("order", "name")
+        )
+
+    def perform_create(self, serializer):
+        division = serializer.validated_data["division"]
+        if division.tenant_id != self.request.user.tenant_id:
+            raise ValidationError({"division": "Division must belong to your tenant."})
+        serializer.save(tenant=self.request.user.tenant, created_by=self.request.user)
+
+
+class BoardViewSet(TenantHierarchyViewSet):
+    serializer_class = BoardSerializer
+    queryset = Board.objects.none()
+
+    def get_queryset(self):
+        return (
+            Board.objects.for_tenant(self.request.user.tenant)
+            .active()
+            .select_related("division", "section")
+            .prefetch_related("statuses")
+            .order_by("order", "name")
+        )
+
+    def _validate_parent_scope(self, serializer):
+        division = serializer.validated_data.get("division")
+        section = serializer.validated_data.get("section")
+        if division and division.tenant_id != self.request.user.tenant_id:
+            raise ValidationError({"division": "Division must belong to your tenant."})
+        if section and section.tenant_id != self.request.user.tenant_id:
+            raise ValidationError({"section": "Section must belong to your tenant."})
+
+    def perform_create(self, serializer):
+        self._validate_parent_scope(serializer)
+        serializer.save(tenant=self.request.user.tenant, created_by=self.request.user)
+
+    def perform_update(self, serializer):
+        self._validate_parent_scope(serializer)
+        serializer.save()
+
+
+class TaskStatusViewSet(TenantHierarchyViewSet):
+    serializer_class = BoardStatusSerializer
+    queryset = BoardStatus.objects.none()
+
+    def get_queryset(self):
+        return (
+            BoardStatus.objects.filter(board__tenant=self.request.user.tenant)
+            .select_related("board")
+            .order_by("board_id", "order")
+        )
+
+    def perform_create(self, serializer):
+        board = serializer.validated_data["board"]
+        if board.tenant_id != self.request.user.tenant_id:
+            raise ValidationError({"board": "Board must belong to your tenant."})
+        serializer.save()
+
+    def perform_update(self, serializer):
+        instance = self.get_object()
+        if instance.is_default:
+            raise ValidationError({"detail": "Default statuses cannot be modified."})
+        board = serializer.validated_data.get("board", instance.board)
+        if board.tenant_id != self.request.user.tenant_id:
+            raise ValidationError({"board": "Board must belong to your tenant."})
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        if instance.is_default:
+            raise ValidationError({"detail": "Default statuses cannot be deleted."})
+        if instance.board.tenant_id != self.request.user.tenant_id:
+            raise PermissionDenied("Cross-tenant deletion forbidden.")
+        instance.delete()

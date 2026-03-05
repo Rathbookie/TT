@@ -1,29 +1,29 @@
 from rest_framework.exceptions import PermissionDenied
 
 ALLOWED_TRANSITIONS = {
-    "NOT_STARTED": {
-        "IN_PROGRESS": ["TASK_RECEIVER","TASK_CREATOR"],
-        "CANCELLED": ["TASK_RECEIVER", "TASK_CREATOR", "ADMIN"],
+    "Not Started": {
+        "In Progress": ["TASK_RECEIVER", "TASK_CREATOR"],
+        "Cancelled": ["TASK_RECEIVER", "TASK_CREATOR", "ADMIN"],
     },
-    "IN_PROGRESS": {
-        "BLOCKED": ["TASK_RECEIVER","TASK_CREATOR"],
-        "WAITING_REVIEW": ["TASK_RECEIVER","TASK_CREATOR"],
-        "CANCELLED": ["TASK_RECEIVER", "TASK_CREATOR", "ADMIN"],
+    "In Progress": {
+        "Blocked": ["TASK_RECEIVER", "TASK_CREATOR"],
+        "In Review": ["TASK_RECEIVER", "TASK_CREATOR"],
+        "Cancelled": ["TASK_RECEIVER", "TASK_CREATOR", "ADMIN"],
     },
-    "BLOCKED": {
-        "IN_PROGRESS": ["TASK_RECEIVER"],
-        "CANCELLED": ["TASK_RECEIVER", "TASK_CREATOR", "ADMIN"],
+    "Blocked": {
+        "In Progress": ["TASK_RECEIVER"],
+        "Cancelled": ["TASK_RECEIVER", "TASK_CREATOR", "ADMIN"],
     },
-    "WAITING_REVIEW": {
-        "DONE": ["TASK_CREATOR"],
-        "IN_PROGRESS": ["TASK_CREATOR"],
-        "CANCELLED": ["TASK_CREATOR", "ADMIN"],
+    "In Review": {
+        "Done": ["TASK_CREATOR"],
+        "In Progress": ["TASK_CREATOR"],
+        "Cancelled": ["TASK_CREATOR", "ADMIN"],
     },
-    "DONE": {
-        "IN_PROGRESS": ["ADMIN"],
-        "CANCELLED": ["ADMIN"],
+    "Done": {
+        "In Progress": ["ADMIN"],
+        "Cancelled": ["ADMIN"],
     },
-    "CANCELLED": {},
+    "Cancelled": {},
 }
 
 

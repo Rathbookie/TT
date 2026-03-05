@@ -13,6 +13,3 @@ ROLE_PERMISSIONS = {
         "tasks.read",
     ],
 }
-from django.test import TestCase
-
-# Create your tests here.

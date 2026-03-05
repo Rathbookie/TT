@@ -46,6 +46,7 @@ class WorkflowStage(models.Model):
     is_terminal = models.BooleanField(default=False)
     requires_attachments = models.BooleanField(default=False)
     requires_approval = models.BooleanField(default=False)
+    color = models.CharField(max_length=7, default="#6B7280")
 
     class Meta:
         ordering = ["order"]
@@ -95,6 +96,88 @@ class WorkflowTransition(models.Model):
             f"{self.workflow.name}: {self.from_stage.name} -> "
             f"{self.to_stage.name} ({self.allowed_role})"
         )
+
+
+class WorkflowStatus(models.Model):
+    workflow = models.ForeignKey(
+        Workflow,
+        on_delete=models.CASCADE,
+        related_name="statuses",
+    )
+    name = models.CharField(max_length=64)
+    order = models.PositiveIntegerField(default=0)
+    is_terminal = models.BooleanField(default=False)
+    color = models.CharField(max_length=7, default="#6B7280")
+
+    class Meta:
+        ordering = ["order", "name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["workflow", "name"],
+                name="uniq_status_name_per_workflow",
+            ),
+            models.UniqueConstraint(
+                fields=["workflow", "order"],
+                name="uniq_status_order_per_workflow",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.workflow.name} - {self.name}"
+
+
+class TransitionRule(models.Model):
+    workflow = models.ForeignKey(
+        Workflow,
+        on_delete=models.CASCADE,
+        related_name="transition_rules",
+    )
+    from_status = models.ForeignKey(
+        WorkflowStatus,
+        on_delete=models.CASCADE,
+        related_name="outgoing_rules",
+    )
+    to_status = models.ForeignKey(
+        WorkflowStatus,
+        on_delete=models.CASCADE,
+        related_name="incoming_rules",
+    )
+    allowed_roles = models.JSONField(default=list, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["workflow", "from_status", "to_status"],
+                name="uniq_transition_rule_per_status_pair",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.workflow.name}: {self.from_status.name} -> {self.to_status.name}"
+
+
+class ProofRequirement(models.Model):
+    class Type(models.TextChoices):
+        FILE = "FILE", "File"
+        TEXT = "TEXT", "Text"
+        URL = "URL", "Url"
+
+    transition_rule = models.ForeignKey(
+        TransitionRule,
+        on_delete=models.CASCADE,
+        related_name="proof_requirements",
+    )
+    type = models.CharField(max_length=10, choices=Type.choices)
+    label = models.CharField(max_length=255)
+    is_mandatory = models.BooleanField(default=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["transition_rule", "is_mandatory"]),
+        ]
+
+    def __str__(self):
+        return f"{self.transition_rule} - {self.label}"
 
 
 class WorkflowPreset(models.Model):

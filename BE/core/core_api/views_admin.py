@@ -11,6 +11,10 @@ from core_api.permissions import IsAdminRole
 from workflows.models import TenantModule, DashboardConfig
 
 
+def _status_name(task):
+    return task.status.name if task.status else "Unassigned"
+
+
 class AdminDashboardView(APIView):
     permission_classes = [IsAuthenticated, IsAdminRole]
 
@@ -22,9 +26,9 @@ class AdminDashboardView(APIView):
         users = User.objects.filter(tenant=tenant)
 
         total_users = users.count()
-        active_tasks = tasks.filter(status="IN_PROGRESS").count()
-        blocked_tasks = tasks.filter(status="BLOCKED").count()
-        done_tasks = tasks.filter(status="DONE").count()
+        active_tasks = tasks.filter(status__name__iexact="In Progress").count()
+        blocked_tasks = tasks.filter(status__name__iexact="Blocked").count()
+        done_tasks = tasks.filter(status__is_terminal=True, status__is_cancelled=False).count()
 
         total_tasks = tasks.count()
         completion_rate = (
@@ -34,22 +38,13 @@ class AdminDashboardView(APIView):
 
         # Status Overview
         status_counts = (
-            tasks.values("status")
+            tasks.values("status__name")
             .annotate(count=Count("id"))
         )
 
-        status_map = {
-            "NOT_STARTED": "Not Started",
-            "IN_PROGRESS": "In Progress",
-            "BLOCKED": "Blocked",
-            "WAITING": "Waiting",
-            "DONE": "Done",
-            "CANCELLED": "Cancelled",
-        }
-
         status_overview = [
             {
-                "name": status_map.get(item["status"], item["status"]),
+                "name": item["status__name"] or "Unassigned",
                 "count": item["count"],
             }
             for item in status_counts
@@ -115,14 +110,14 @@ class DashboardWidgetsView(APIView):
         overdue_count = tasks.filter(
             due_date__isnull=False,
             due_date__lt=now,
-        ).exclude(status=Task.Status.DONE).count()
-        active_count = tasks.filter(status=Task.Status.IN_PROGRESS).count()
-        done_count = tasks.filter(status=Task.Status.DONE).count()
+        ).exclude(status__is_terminal=True, status__is_cancelled=False).count()
+        active_count = tasks.filter(status__name__iexact="In Progress").count()
+        done_count = tasks.filter(status__is_terminal=True, status__is_cancelled=False).count()
         total_count = tasks.count()
         completion_rate = round((done_count / total_count) * 100, 1) if total_count else 0
 
         stage_distribution = list(
-            tasks.values("status").annotate(count=Count("id")).order_by("status")
+            tasks.values("status__name").annotate(count=Count("id")).order_by("status__name")
         )
 
         recent_activity = [
@@ -138,20 +133,20 @@ class DashboardWidgetsView(APIView):
             {
                 "id": t.id,
                 "title": t.title,
-                "status": t.status,
+                "status": _status_name(t),
                 "priority": t.priority,
                 "due_date": t.due_date,
             }
-            for t in tasks.filter(assigned_to=request.user).order_by("due_date")[:10]
+            for t in tasks.filter(assignees=request.user).distinct().order_by("due_date")[:10]
         ]
 
         approval_queue = [
             {
                 "id": t.id,
                 "title": t.title,
-                "status": t.status,
+                "status": _status_name(t),
             }
-            for t in tasks.filter(status=Task.Status.WAITING_REVIEW).order_by("-updated_at")[:10]
+            for t in tasks.filter(status__name__iexact="In Review").order_by("-updated_at")[:10]
         ]
 
         enabled_module_keys = set(
@@ -219,6 +214,7 @@ class DashboardConfigView(APIView):
         {"id": "w-task-table", "key": "task_table", "size": "l", "settings": {"mode": "all", "limit": 12}},
         {"id": "w-workload", "key": "workload_by_status", "size": "m", "settings": {}},
         {"id": "w-due-soon", "key": "tasks_due_soon", "size": "m", "settings": {}},
+        {"id": "w-recent-activity", "key": "recent_activity", "size": "m", "settings": {}},
         {"id": "w-overdue", "key": "overdue_tasks", "size": "m", "settings": {}},
     ]
 
@@ -227,6 +223,16 @@ class DashboardConfigView(APIView):
             tenant=user.tenant,
             role__name__iexact=Role.ADMIN,
         ).exists()
+
+    def _parse_scope_key(self, request):
+        scope_key = request.query_params.get("scope_key") or request.data.get("scope_key")
+        if scope_key is None:
+            return None
+        scope_key = str(scope_key).strip()
+        return scope_key or None
+
+    def _scope_dashboard_name(self, scope_key):
+        return f"__scope__{scope_key}"
 
     def _can_view(self, dashboard, user, is_admin):
         if is_admin:
@@ -262,10 +268,33 @@ class DashboardConfigView(APIView):
             auto_refresh_seconds=30,
         )
 
+    def _get_or_create_scoped(self, user, scope_key):
+        name = self._scope_dashboard_name(scope_key)
+        dashboard = DashboardConfig.objects.filter(
+            tenant=user.tenant,
+            name=name,
+        ).first()
+        if dashboard:
+            return dashboard
+        return DashboardConfig.objects.create(
+            tenant=user.tenant,
+            owner=user,
+            name=name,
+            visibility=DashboardConfig.Visibility.INTERNAL,
+            is_default=False,
+            global_filters={},
+            widgets=self.DEFAULT_WIDGETS,
+            auto_refresh_seconds=30,
+        )
+
     def _serialize_dashboard(self, dashboard, user, is_admin):
+        scope_key = None
+        if dashboard.name.startswith("__scope__"):
+            scope_key = dashboard.name.replace("__scope__", "", 1)
         return {
             "id": dashboard.id,
             "name": dashboard.name,
+            "scope_key": scope_key,
             "visibility": dashboard.visibility,
             "is_default": dashboard.is_default,
             "global_filters": dashboard.global_filters or {},
@@ -279,6 +308,26 @@ class DashboardConfigView(APIView):
     def get(self, request):
         user = request.user
         is_admin = self._is_admin(user)
+        scope_key = self._parse_scope_key(request)
+
+        if scope_key:
+            scoped_dashboard = self._get_or_create_scoped(user, scope_key)
+            return Response(
+                {
+                    "dashboard": self._serialize_dashboard(scoped_dashboard, user, is_admin),
+                    "dashboards": [
+                        {
+                            "id": scoped_dashboard.id,
+                            "name": scoped_dashboard.name,
+                            "visibility": scoped_dashboard.visibility,
+                            "is_default": scoped_dashboard.is_default,
+                            "can_edit": self._can_edit(scoped_dashboard, user, is_admin),
+                            "scope_key": scope_key,
+                        }
+                    ],
+                }
+            )
+
         self._get_or_create_default(user)
 
         dashboards = list(
@@ -323,6 +372,24 @@ class DashboardConfigView(APIView):
                 {"detail": "Only admin can create dashboards."},
                 status=status.HTTP_403_FORBIDDEN,
             )
+        scope_key = self._parse_scope_key(request)
+        if scope_key:
+            dashboard = self._get_or_create_scoped(user, scope_key)
+            if "widgets" in request.data and isinstance(request.data.get("widgets"), list):
+                dashboard.widgets = request.data.get("widgets")
+            if "global_filters" in request.data and isinstance(request.data.get("global_filters"), dict):
+                dashboard.global_filters = request.data.get("global_filters")
+            if "auto_refresh_seconds" in request.data:
+                try:
+                    seconds = int(request.data.get("auto_refresh_seconds"))
+                except (TypeError, ValueError):
+                    seconds = 30
+                dashboard.auto_refresh_seconds = max(10, min(seconds, 3600))
+            dashboard.save()
+            return Response(
+                self._serialize_dashboard(dashboard, user, True),
+                status=status.HTTP_201_CREATED,
+            )
         name = str(request.data.get("name", "")).strip() or "Dashboard"
         base_name = name
         idx = 2
@@ -347,6 +414,31 @@ class DashboardConfigView(APIView):
     def patch(self, request):
         user = request.user
         is_admin = self._is_admin(user)
+        scope_key = self._parse_scope_key(request)
+
+        if scope_key:
+            dashboard = self._get_or_create_scoped(user, scope_key)
+            if not self._can_edit(dashboard, user, is_admin):
+                return Response({"detail": "You cannot edit this dashboard."}, status=status.HTTP_403_FORBIDDEN)
+            if "auto_refresh_seconds" in request.data:
+                try:
+                    seconds = int(request.data.get("auto_refresh_seconds"))
+                except (TypeError, ValueError):
+                    return Response({"detail": "auto_refresh_seconds must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+                dashboard.auto_refresh_seconds = max(10, min(seconds, 3600))
+            if "global_filters" in request.data:
+                filters = request.data.get("global_filters")
+                if not isinstance(filters, dict):
+                    return Response({"detail": "global_filters must be an object."}, status=status.HTTP_400_BAD_REQUEST)
+                dashboard.global_filters = filters
+            if "widgets" in request.data:
+                widgets = request.data.get("widgets")
+                if not isinstance(widgets, list):
+                    return Response({"detail": "widgets must be a list."}, status=status.HTTP_400_BAD_REQUEST)
+                dashboard.widgets = widgets
+            dashboard.save()
+            return Response(self._serialize_dashboard(dashboard, user, is_admin))
+
         dashboard_id = request.data.get("dashboard_id") or request.query_params.get("dashboard_id")
         if not dashboard_id:
             return Response({"detail": "dashboard_id is required."}, status=status.HTTP_400_BAD_REQUEST)

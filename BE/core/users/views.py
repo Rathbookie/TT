@@ -2,6 +2,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework import generics
 from rest_framework.exceptions import PermissionDenied
+from django.db.models import Q
 
 from users.throttling import LoginRateThrottle
 from .token_serializer import CustomTokenObtainPairSerializer
@@ -42,10 +43,19 @@ class TenantUserListView(generics.ListAPIView):
             if normalized
         }
 
-        if active_role not in user_roles:
+        if active_role and active_role not in user_roles:
             raise PermissionDenied("Invalid active role.")
 
-        if active_role not in ["TASK_CREATOR", "ADMIN"]:
+        # Search endpoint is read-only; allow all task roles in the tenant.
+        if not user_roles.intersection({"TASK_CREATOR", "TASK_RECEIVER", "ADMIN"}):
             raise PermissionDenied("You do not have permission to view users.")
 
-        return User.objects.filter(tenant=tenant)
+        queryset = User.objects.filter(tenant=tenant)
+        search = (self.request.query_params.get("search") or "").strip()
+        if search:
+            queryset = queryset.filter(
+                Q(first_name__icontains=search)
+                | Q(last_name__icontains=search)
+                | Q(email__icontains=search)
+            )
+        return queryset.order_by("first_name", "last_name", "email")
