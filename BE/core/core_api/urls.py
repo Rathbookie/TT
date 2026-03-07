@@ -1,11 +1,15 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
-from users.views import CustomTokenObtainPairView, TenantUserListView
+from users.views import CustomTokenObtainPairView, TenantUserListView, TenantUserDetailView
 from .views import (
     health,
     TaskViewSet,
     me,
+    me_password,
+    notifications_list,
+    notification_mark_read,
+    notifications_mark_all_read,
     DivisionViewSet,
     SectionViewSet,
     BoardViewSet,
@@ -35,12 +39,17 @@ router.register("modules", TenantModuleViewSet, basename="modules")
 urlpatterns = [
     path("health/", health),
     path("me/", me, name="me"),
+    path("me/password/", me_password, name="me-password"),
+    path("notifications/", notifications_list, name="notifications-list"),
+    path("notifications/<int:notification_id>/read/", notification_mark_read, name="notification-mark-read"),
+    path("notifications/read-all/", notifications_mark_all_read, name="notifications-mark-all-read"),
 
     # JWT login endpoint
     path("token/", CustomTokenObtainPairView.as_view(), name="token_obtain_pair"),
 
     # Tenant users endpoint
     path("users/", TenantUserListView.as_view(), name="tenant-users"),
+    path("users/<int:user_id>/", TenantUserDetailView.as_view(), name="tenant-user-detail"),
 
     # Admin dashboard endpoint
     path("admin/dashboard/", AdminDashboardView.as_view(), name="admin-dashboard"),

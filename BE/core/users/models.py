@@ -7,6 +7,15 @@ from context.models import Tenant
 class User(AbstractUser):
     first_name = models.CharField(max_length=150, default ="Temp")
     last_name = models.CharField(max_length=150, default ="User")
+    display_name = models.CharField(max_length=150, blank=True, default="")
+    job_title = models.CharField(max_length=150, blank=True, default="")
+    phone = models.CharField(max_length=30, blank=True, default="")
+    timezone = models.CharField(max_length=80, blank=True, default="")
+    bio = models.TextField(blank=True, default="")
+    notify_task_assigned = models.BooleanField(default=True)
+    notify_task_status_changed = models.BooleanField(default=True)
+    notify_due_reminder = models.BooleanField(default=True)
+    notify_proof_submitted = models.BooleanField(default=True)
 
     tenant = models.ForeignKey(
         Tenant,

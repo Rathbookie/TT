@@ -16,6 +16,7 @@ from .models import (
     BoardStatus, TaskAssignee,
     Division, Section, Board,
     OrganizationProfile,
+    Notification,
 )
 from users.models import User
 from workflows.models import Workflow, WorkflowStage
@@ -68,6 +69,28 @@ class TaskUserSerializer(serializers.ModelSerializer):
 
     def get_full_name(self, obj):
         return f"{obj.first_name} {obj.last_name}".strip()
+
+
+class NotificationSerializer(serializers.ModelSerializer):
+    actor = TaskUserSerializer(read_only=True)
+    task_ref = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Notification
+        fields = [
+            "id",
+            "kind",
+            "title",
+            "body",
+            "is_read",
+            "read_at",
+            "created_at",
+            "actor",
+            "task_ref",
+        ]
+
+    def get_task_ref(self, obj):
+        return obj.task.ref_id if obj.task_id else None
 
 
 # =============================================================================

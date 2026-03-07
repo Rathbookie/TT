@@ -862,5 +862,54 @@ class TaskAttachment(models.Model):
         return f"{self.original_name} on [{self.task.ref_id}]"
 
 
+class Notification(models.Model):
+    class Kind(models.TextChoices):
+        TASK_ASSIGNED = "TASK_ASSIGNED", "Task Assigned"
+        TASK_STATUS_CHANGED = "TASK_STATUS_CHANGED", "Task Status Changed"
+        TASK_PROOF_SUBMITTED = "TASK_PROOF_SUBMITTED", "Task Proof Submitted"
+        TASK_COMPLETED = "TASK_COMPLETED", "Task Completed"
+
+    tenant = models.ForeignKey(
+        Tenant,
+        on_delete=models.CASCADE,
+        related_name="notifications",
+    )
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="notifications",
+    )
+    actor = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="notifications_triggered",
+    )
+    task = models.ForeignKey(
+        Task,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="notifications",
+    )
+    kind = models.CharField(max_length=32, choices=Kind.choices)
+    title = models.CharField(max_length=160)
+    body = models.CharField(max_length=255, blank=True)
+    is_read = models.BooleanField(default=False)
+    read_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["tenant", "user", "is_read"]),
+            models.Index(fields=["tenant", "user", "-created_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.user_id}:{self.kind}:{self.title}"
+
+
 # Semantic alias for per-board task statuses.
 TaskStatus = BoardStatus

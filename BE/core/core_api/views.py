@@ -14,6 +14,9 @@ from django.utils import timezone
 from django.db import transaction
 from django.db.models import F
 from django.shortcuts import get_object_or_404
+from django.contrib.auth.password_validation import validate_password
+from django.core.validators import validate_email
+from django.core.exceptions import ValidationError as DjangoValidationError
 
 from rest_framework.response import Response
 from rest_framework.decorators import api_view, permission_classes
@@ -32,6 +35,7 @@ from core_api.serializers import (
     BoardSerializer,
     BoardStatusSerializer,
     TaskProofSerializer,
+    NotificationSerializer,
 )
 from core_api.permissions import TaskPermission, IsAdminRole
 from core_api.models import (
@@ -45,10 +49,12 @@ from core_api.models import (
     Section,
     Board,
     BoardStatus,
+    Notification,
 )
 from core_api.serializers import TaskAttachmentSerializer
 
 from users.models import UserRole
+from users.models import User
 
 from core_api.pagination import TaskPagination
 
@@ -57,6 +63,12 @@ from workflows.utils import (
     get_first_stage,
     get_first_non_terminal_stage,
     validate_stage_transition,
+)
+from core_api.notifications import (
+    notify_task_assigned,
+    notify_status_changed,
+    notify_proof_submitted,
+    notify_task_completed,
 )
 
 
@@ -77,17 +89,125 @@ def get_normalized_user_roles(user, tenant):
     }
 
 
+def _coerce_bool(value, fallback):
+    if value is None:
+        return fallback
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return fallback
+
+
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def health(request):
     return Response({"status": "ok"})
 
 
-@api_view(["GET"])
+@api_view(["GET", "PATCH"])
 @permission_classes([IsAuthenticated])
 def me(request):
     user = request.user
     tenant = user.tenant
+
+    if request.method == "PATCH":
+        first_name = str(request.data.get("first_name", user.first_name)).strip()
+        last_name = str(request.data.get("last_name", user.last_name)).strip()
+        email = str(request.data.get("email", user.email)).strip().lower()
+        display_name = str(request.data.get("display_name", user.display_name or "")).strip()
+        job_title = str(request.data.get("job_title", user.job_title or "")).strip()
+        phone = str(request.data.get("phone", user.phone or "")).strip()
+        timezone_value = str(request.data.get("timezone", user.timezone or "")).strip()
+        bio = str(request.data.get("bio", user.bio or "")).strip()
+        notify_task_assigned = _coerce_bool(
+            request.data.get("notify_task_assigned"),
+            user.notify_task_assigned,
+        )
+        notify_task_status_changed = _coerce_bool(
+            request.data.get("notify_task_status_changed"),
+            user.notify_task_status_changed,
+        )
+        notify_due_reminder = _coerce_bool(
+            request.data.get("notify_due_reminder"),
+            user.notify_due_reminder,
+        )
+        notify_proof_submitted = _coerce_bool(
+            request.data.get("notify_proof_submitted"),
+            user.notify_proof_submitted,
+        )
+
+        if (
+            len(first_name) > 150
+            or len(last_name) > 150
+            or len(email) > 254
+            or len(display_name) > 150
+            or len(job_title) > 150
+            or len(phone) > 30
+            or len(timezone_value) > 80
+        ):
+            return Response(
+                {"detail": "One or more profile fields exceed allowed length."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            validate_email(email)
+        except DjangoValidationError:
+            return Response(
+                {"detail": "Enter a valid email address."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        email_taken = User.objects.filter(email__iexact=email).exclude(id=user.id).exists()
+        if email_taken:
+            return Response(
+                {"detail": "This email is already in use."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        dirty_fields = []
+        if user.first_name != first_name:
+            user.first_name = first_name
+            dirty_fields.append("first_name")
+        if user.last_name != last_name:
+            user.last_name = last_name
+            dirty_fields.append("last_name")
+        if user.email != email:
+            user.email = email
+            dirty_fields.append("email")
+        if user.display_name != display_name:
+            user.display_name = display_name
+            dirty_fields.append("display_name")
+        if user.job_title != job_title:
+            user.job_title = job_title
+            dirty_fields.append("job_title")
+        if user.phone != phone:
+            user.phone = phone
+            dirty_fields.append("phone")
+        if user.timezone != timezone_value:
+            user.timezone = timezone_value
+            dirty_fields.append("timezone")
+        if user.bio != bio:
+            user.bio = bio
+            dirty_fields.append("bio")
+        if user.notify_task_assigned != notify_task_assigned:
+            user.notify_task_assigned = notify_task_assigned
+            dirty_fields.append("notify_task_assigned")
+        if user.notify_task_status_changed != notify_task_status_changed:
+            user.notify_task_status_changed = notify_task_status_changed
+            dirty_fields.append("notify_task_status_changed")
+        if user.notify_due_reminder != notify_due_reminder:
+            user.notify_due_reminder = notify_due_reminder
+            dirty_fields.append("notify_due_reminder")
+        if user.notify_proof_submitted != notify_proof_submitted:
+            user.notify_proof_submitted = notify_proof_submitted
+            dirty_fields.append("notify_proof_submitted")
+        if dirty_fields:
+            user.save(update_fields=dirty_fields)
 
     roles = list(
         UserRole.objects.filter(user=user, tenant=tenant)
@@ -99,9 +219,117 @@ def me(request):
         "email": user.email,
         "first_name": user.first_name,
         "last_name": user.last_name,
+        "display_name": user.display_name or "",
+        "job_title": user.job_title or "",
+        "phone": user.phone or "",
+        "timezone": user.timezone or "",
+        "bio": user.bio or "",
+        "notify_task_assigned": user.notify_task_assigned,
+        "notify_task_status_changed": user.notify_task_status_changed,
+        "notify_due_reminder": user.notify_due_reminder,
+        "notify_proof_submitted": user.notify_proof_submitted,
         "tenant_slug": tenant.slug,
         "roles": roles,
     })
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def me_password(request):
+    user = request.user
+    current_password = str(request.data.get("current_password", ""))
+    new_password = str(request.data.get("new_password", ""))
+    confirm_password = str(request.data.get("confirm_password", ""))
+
+    if not current_password or not new_password or not confirm_password:
+        return Response(
+            {"detail": "Current password, new password, and confirmation are required."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if not user.check_password(current_password):
+        return Response(
+            {"detail": "Current password is incorrect."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if new_password != confirm_password:
+        return Response(
+            {"detail": "New password and confirmation do not match."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        validate_password(new_password, user=user)
+    except Exception as exc:
+        first_message = str(exc)
+        if hasattr(exc, "messages") and getattr(exc, "messages"):
+            first_message = str(exc.messages[0])
+        return Response(
+            {"detail": first_message},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    user.set_password(new_password)
+    user.save(update_fields=["password"])
+
+    return Response({"detail": "Password updated successfully."}, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def notifications_list(request):
+    tenant = request.user.tenant
+    unread_only = str(request.query_params.get("unread", "")).strip().lower() in {"1", "true", "yes"}
+    try:
+        limit = int(request.query_params.get("limit", 20))
+    except (TypeError, ValueError):
+        limit = 20
+    limit = max(1, min(limit, 100))
+
+    queryset = Notification.objects.filter(tenant=tenant, user=request.user).select_related(
+        "actor", "task"
+    )
+    if unread_only:
+        queryset = queryset.filter(is_read=False)
+    items = list(queryset[:limit])
+    unread_count = Notification.objects.filter(
+        tenant=tenant,
+        user=request.user,
+        is_read=False,
+    ).count()
+    return Response({
+        "results": NotificationSerializer(items, many=True).data,
+        "unread_count": unread_count,
+    })
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def notification_mark_read(request, notification_id):
+    notification = get_object_or_404(
+        Notification.objects.filter(
+            tenant=request.user.tenant,
+            user=request.user,
+        ),
+        id=notification_id,
+    )
+    if not notification.is_read:
+        notification.is_read = True
+        notification.read_at = timezone.now()
+        notification.save(update_fields=["is_read", "read_at"])
+    return Response({"detail": "Notification marked as read."}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def notifications_mark_all_read(request):
+    Notification.objects.filter(
+        tenant=request.user.tenant,
+        user=request.user,
+        is_read=False,
+    ).update(is_read=True, read_at=timezone.now())
+    return Response({"detail": "All notifications marked as read."}, status=status.HTTP_200_OK)
 
 
 def _get_tenant_for_org_slug(user, org_slug):
@@ -404,9 +632,18 @@ class TaskViewSet(ModelViewSet):
             due_date=task.due_date,
         )
 
+        assigned_users = list(task.assignees.all())
+        if assigned_users:
+            notify_task_assigned(
+                task=task,
+                actor=user,
+                recipients=assigned_users,
+            )
+
     def update(self, request, *args, **kwargs):
         with transaction.atomic():
             instance = self.get_object()
+            old_assignee_ids = set(instance.assignees.values_list("id", flat=True))
 
             if instance.tenant_id != request.user.tenant_id:
                 raise PermissionDenied("Cross-tenant modification forbidden.")
@@ -508,6 +745,8 @@ class TaskViewSet(ModelViewSet):
                 version=F("version") + 1,
             )
             task.refresh_from_db()
+            new_assignees = list(task.assignees.all())
+            new_assignee_ids = {u.id for u in new_assignees}
 
             # History action classification
             new_status_name = task.status.name if task.status else ""
@@ -538,6 +777,37 @@ class TaskViewSet(ModelViewSet):
                 due_date=task.due_date,
                 changes=changes,
             )
+
+            if old_status_name != new_status_name:
+                recipients_by_id = {}
+                if task.created_by_id:
+                    recipients_by_id[task.created_by_id] = task.created_by
+                for assignee in new_assignees:
+                    recipients_by_id[assignee.id] = assignee
+                notify_status_changed(
+                    task=task,
+                    actor=request.user,
+                    from_status=old_status_name,
+                    to_status=new_status_name,
+                    recipients=list(recipients_by_id.values()),
+                )
+
+                became_terminal_done = bool(task.status and task.status.is_terminal and not task.status.is_cancelled)
+                if became_terminal_done:
+                    notify_task_completed(
+                        task=task,
+                        actor=request.user,
+                        recipients=new_assignees,
+                    )
+
+            added_assignee_ids = new_assignee_ids - old_assignee_ids
+            if added_assignee_ids:
+                recipients = [u for u in new_assignees if u.id in added_assignee_ids]
+                notify_task_assigned(
+                    task=task,
+                    actor=request.user,
+                    recipients=recipients,
+                )
 
             return Response(self.get_serializer(task).data)
 
@@ -743,6 +1013,16 @@ class TaskViewSet(ModelViewSet):
             tenant=request.user.tenant,
             submitted_by=request.user,
         )
+        recipients_by_id = {}
+        if task.created_by_id:
+            recipients_by_id[task.created_by_id] = task.created_by
+        for assignee in task.assignees.all():
+            recipients_by_id[assignee.id] = assignee
+        notify_proof_submitted(
+            task=task,
+            actor=request.user,
+            recipients=list(recipients_by_id.values()),
+        )
         return Response(TaskProofSerializer(proof, context={"request": request}).data, status=status.HTTP_201_CREATED)
 
     @action(
@@ -796,12 +1076,18 @@ class TaskViewSet(ModelViewSet):
         if not assignee:
             raise ValidationError({"user_id": "User does not belong to this tenant."})
 
-        TaskAssignee.objects.get_or_create(
+        _, created = TaskAssignee.objects.get_or_create(
             task=task,
             user=assignee,
             defaults={"assigned_by": request.user},
         )
         task.refresh_from_db()
+        if created:
+            notify_task_assigned(
+                task=task,
+                actor=request.user,
+                recipients=[assignee],
+            )
         return Response(self.get_serializer(task).data, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["delete"], url_path=r"assignees/(?P<user_id>[^/.]+)")
